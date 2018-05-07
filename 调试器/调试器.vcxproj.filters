@@ -30,6 +30,15 @@
     <ClInclude Include="initSomeThing.h">
       <Filter>头文件</Filter>
     </ClInclude>
+    <ClInclude Include="ExceptionHandle.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="RegStruct.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="Tool.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="stdafx.cpp">
@@ -42,6 +51,12 @@
       <Filter>源文件</Filter>
     </ClCompile>
     <ClCompile Include="initSomeThing.cpp">
+      <Filter>源文件</Filter>
+    </ClCompile>
+    <ClCompile Include="ExceptionHandle.cpp">
+      <Filter>源文件</Filter>
+    </ClCompile>
+    <ClCompile Include="Tool.cpp">
       <Filter>源文件</Filter>
     </ClCompile>
   </ItemGroup>
