@@ -5,6 +5,9 @@
 #include "RegStruct.h"
 #include <vector>
 #include<string>
+#include <map>
+#include <list>
+#include <TlHelp32.h>
 #include"Tool.h"
 using namespace std;
 // 包含反汇编引擎的头文件和库文件
@@ -48,3 +51,13 @@ public:
 	~TheBeaClass();
 	void UseBea(char*opcode, DISASM disAsm);
 };
+
+
+//模块节点结构
+typedef struct {
+	DWORD		dwModBase;
+	DWORD		dwModSize;
+	DWORD		dwModEntry;
+	WCHAR		szModName[100];
+	WCHAR		szModPath[100];
+}DLLNODE, *PDLLNODE;

@@ -194,6 +194,238 @@ BOOL CExceptionHandle::Print(SIZE_T dwAddress)
 }
 
 //************************************
+// Method:    ShowMemoryData
+// FullName:  CExceptionHandle::ShowMemoryData
+// Description:打印内存信息
+// Access:    public 
+// Returns:   BOOL
+// Qualifier:
+// Parameter: SIZE_T dwAddress
+// Date: 2018/5/8 18:13
+// Author : RuiQiYang
+//************************************
+BOOL CExceptionHandle::ShowMemoryData(char* pszCmd)
+{
+	if (NULL == pszCmd)
+	{
+		OutputDebugString(L"参数指针为空!\r\n");
+		return 0;
+	}
+
+	int nParamCount = GetParamCount(pszCmd);
+	LPVOID dwEip = 0;
+	int nLen = 0x80;
+
+	if (1 == nParamCount)
+	{
+		dwEip = (LPVOID)GetCurrentEip(m_dbgEvent.dwThreadId);
+	}
+
+	else if (2 == nParamCount)
+	{
+		sscanf_s(pszCmd, "%s%x", stderr,100, &dwEip);
+	}
+
+	else if (3 == nParamCount)
+	{
+		sscanf_s(pszCmd, "%s%x%x", stderr,100, &dwEip, &nLen);
+	}
+
+	DisplayDestProcessMemory(dwEip, nLen);
+	return TRUE;
+}
+
+//************************************
+// Method:    EditMemoryData
+// FullName:  CExceptionHandle::EditMemoryData
+// Description:修改内存信息
+// Access:    public 
+// Returns:   BOOL
+// Qualifier:
+// Date: 2018/5/8 20:51
+// Author : RuiQiYang
+//************************************
+BOOL CExceptionHandle::EditMemoryData()
+{
+	BYTE oldbyte;
+	DWORD oldProtect;
+	DWORD len;
+	printf("请输入要修改的地址：");
+	DWORD dwAddress = 0;
+	scanf_s("%X", &dwAddress);
+	char bData[1024] = { 0 };
+	SIZE_T write = 0;
+	printf("请输入要内容：");
+	scanf_s("%s", bData, 1024);
+	int tem = strlen(bData);
+	VirtualProtectEx(m_ProInfo.hProcess, (LPVOID)dwAddress, tem+1, PAGE_READWRITE, &oldProtect);
+	// 将内容写入内存
+	if (!WriteProcessMemory(m_ProInfo.hProcess, (LPVOID)dwAddress, &bData, tem, &write))
+	{
+		printf("写入内存失败");
+		VirtualProtectEx(m_ProInfo.hProcess, (LPVOID)dwAddress, tem + 1, oldProtect, &oldProtect);
+		return FALSE;
+	}
+	VirtualProtectEx(m_ProInfo.hProcess, (LPVOID)dwAddress, tem + 1, oldProtect, &oldProtect);
+	return TRUE;
+
+}
+
+//************************************
+// Method:    DisplayDestProcessMemory
+// FullName:  CExceptionHandle::DisplayDestProcessMemory
+// Description:显示调试进程目标内存数据
+// Access:    public 
+// Returns:   int
+// Qualifier:
+// Parameter: LPVOID pAddr
+// Parameter: int nLen
+// Date: 2018/5/8 18:37
+// Author : RuiQiYang
+//************************************
+int CExceptionHandle::DisplayDestProcessMemory(LPVOID pAddr, int nLen)
+{
+	int nPageID = 0;
+	MEMORY_BASIC_INFORMATION mbi = { 0 };
+
+	// 判断地址是否存在
+	if (0 == IsEffectiveAddress(pAddr, &mbi))
+	{
+		OutputDebugString(L"内存地址无效!\r\n");
+		return 0;
+	}
+
+	char *pBuf = new char[nLen + sizeof(char)];
+	//memset(pBuf, 0, nLen + sizeof(char));
+
+	if (NULL == pBuf)
+	{
+		OutputDebugString(L"申请内存失效!\r\n");
+		return 0;
+	}
+
+	if (nLen <= 0)
+	{
+		OutputDebugString(L"长度出错!\r\n");
+		return 0;
+	}
+
+	if (nLen > (int)pAddr)
+	{
+		nLen -= (int)pAddr;
+		++nLen;
+	}
+
+	DWORD dwProtect = 0;
+
+	// 防止下了内存断点，目标内存页没有读的属性，先将读的属性加上去
+	if (FALSE == VirtualProtectEx(m_ProInfo.hProcess, pAddr, BUFFER_MAX,
+		PAGE_EXECUTE_READWRITE, &dwProtect))
+	{
+		OutputDebugString(L"DisplayDestProcessMemory VirtualProtectEx出错!\r\n");
+		return 0;
+
+	}
+
+	DWORD dwNothing = 0;
+
+	if (FALSE == ReadProcessMemory(m_ProInfo.hProcess, pAddr, pBuf,
+		sizeof(char)*nLen, &dwNothing))
+	{
+		OutputDebugString(L"读目标进程出错!\r\n");
+		return 0;
+	}
+	// 将属性还原
+	VirtualProtectEx(m_ProInfo.hProcess, pAddr, BUFFER_MAX,
+		dwProtect, &dwProtect);
+	int nCount = 0;
+	for (int i = nCount; i < nLen;)
+	{
+		// 输出前面的地址
+		if (0 == (i & 0xf))
+		{
+			printf("%p  ", pAddr);
+			pAddr = (LPVOID)((DWORD)pAddr + 0x10);
+		}
+
+		// 输出数据16进制
+		int nIndex(0);
+		for (; nIndex < 0x10 && i < nLen; ++i, ++nIndex)
+		{
+			if (0 == (i % 8) && 0 != (i & 0xf))
+			{
+				printf("- ");
+			}
+			printf("%02X ", (BYTE)(pBuf[i]));
+		}
+
+		if (nIndex <= 8)
+		{
+			printf("  ");
+		}
+
+		// 如果不足0x10个的话，补足
+		for (int k = 0x10 - nIndex; k >= 0; --k)
+		{
+			printf("   ");
+		}
+
+		for (; nCount < i; ++nCount)
+		{
+			byte ch = (byte)pBuf[nCount];
+
+			// isgraph 是否是可显示字符
+			if (isgraph(ch))
+				printf("%c", ch);
+			else
+				printf(".");
+			//printf("%c", (isgraph(ch)) ? ch : '.');
+		}
+		printf("\r\n");
+	}
+
+	if (NULL != pBuf)
+	{
+		delete[] pBuf;
+		pBuf = NULL;
+	}
+
+	return 1;
+}
+
+//************************************
+// Method:    IsEffectiveAddress
+// FullName:  CExceptionHandle::IsEffectiveAddress
+// Description:判断是否是有效地址//通过大小进行判断
+// Access:    public 
+// Returns:   int
+// Qualifier:
+// Parameter: IN LPVOID lpAddr
+// Parameter: IN PMEMORY_BASIC_INFORMATION pMbi
+// Date: 2018/5/8 18:35
+// Author : RuiQiYang
+//************************************
+int CExceptionHandle::IsEffectiveAddress(IN LPVOID lpAddr, IN PMEMORY_BASIC_INFORMATION pMbi)
+{
+	if (NULL == pMbi)
+	{
+		return 0;
+	}
+	if (sizeof(MEMORY_BASIC_INFORMATION)
+		!= VirtualQueryEx(m_ProInfo.hProcess, lpAddr, pMbi,
+			sizeof(MEMORY_BASIC_INFORMATION)))
+	{
+		return 0;
+	}
+
+	if (MEM_COMMIT == pMbi->State)
+	{
+		return 1;
+	}
+	return 0;
+}
+
+//************************************
 // Method:    WaitUserInput
 // FullName:  CExceptionHandle::WaitUserInput
 // Description:等待用户输入
@@ -207,6 +439,7 @@ BOOL CExceptionHandle::WaitUserInput()
 {
 	while (1)
 	{
+		fflush(stdin);
 		CMyDebuggerFramWork temFramWork;
 		temFramWork.m_ProInfo = m_ProInfo;
 		char buffer[20] = {};
@@ -216,12 +449,14 @@ BOOL CExceptionHandle::WaitUserInput()
 		DWORD addr = 0;
 		printf("请输入：");
 		gets_s(buffer, 20);
+		//printf("输入的buffer为：%s\n", buffer);
 		char buffer1[20] = {};
 		memcpy(buffer1, buffer, sizeof(buffer));
 		char* tempBuf = buffer;
 		CmdBuf = strtok_s(buffer, " ", &NumBuf);
 		sscanf_s(NumBuf, "%x", &addr);
 		//单步
+		if(CmdBuf==NULL)continue;
 		if (strcmp("t", CmdBuf) == 0)//DOF7
 		{
 			ResetDelAllPoint();
@@ -260,9 +495,22 @@ BOOL CExceptionHandle::WaitUserInput()
 		{
 			Print(addr);
 		}
+		if (strcmp("d", CmdBuf) == 0)//查看内存
+		{
+			ShowMemoryData(buffer1);
+		}
+
 		if (strcmp("editasm", CmdBuf) == 0)//修改汇编
 		{
 			Editasm(addr);
+		}
+		if (strcmp("e", CmdBuf) == 0)//修改内存
+		{
+			EditMemoryData();
+		}
+		if (strcmp(".show", CmdBuf) == 0)//查看栈信息
+		{
+			ShowMod();
 		}
 		if (strcmp("stack", CmdBuf) == 0)//查看栈信息
 		{
@@ -323,7 +571,7 @@ void CExceptionHandle::PrintCommandHelp(char ch)
 		printf("\t如果后面指定地址，中间的断点将全部失效\r\n");
 		printf("l                                显示PE信息\r\n");
 		printf("d [目标起始地址] [目标终址地址]/[长度] 查看内存\r\n");
-		printf("e [目标起始地址]                 修改内存\r\n");
+		printf("e                                修改内存\r\n");
 		printf("q                                退出\r\n");
 		printf("s 记录范围起始地址 记录范围终止地址 [保存文件名]\r\n");
 		printf("o [脚本路径名]                   运行脚本\r\n");
@@ -887,5 +1135,202 @@ BOOL CExceptionHandle::Editasm(SIZE_T dwAddress)
 	}
 	VirtualProtectEx(m_ProInfo.hProcess, (LPVOID)dwAddress, te + 1, oldProtect, &oldProtect);
 
+	return TRUE;
+}
+
+//************************************
+// Method:    GetCurrentEip
+// FullName:  CExceptionHandle::GetCurrentEip
+// Description:获取Eip
+// Access:    public 
+// Returns:   int
+// Qualifier:
+// Parameter: DWORD dwThreadId
+// Date: 2018/5/8 18:26
+// Author : RuiQiYang
+//************************************
+int CExceptionHandle::GetCurrentEip(DWORD dwThreadId)
+{
+	if (0 == dwThreadId)
+	{
+		return 0;
+	}
+
+	CONTEXT context;
+	context.ContextFlags = CONTEXT_FULL | CONTEXT_DEBUG_REGISTERS;
+
+	if (FALSE == GetCurrentThreadContext(&context))
+	{
+		return 0;
+	}
+
+	return context.Eip;
+}
+
+//************************************
+// Method:    GetCurrentModules
+// FullName:  CExceptionHandle::GetCurrentModules
+// Description:获取当前程序所有模块
+// Access:    public 
+// Returns:   BOOL
+// Qualifier:
+// Parameter: list<DLLNODE> & DllList
+// Parameter: HANDLE hProcess
+// Parameter: LPDEBUG_EVENT lpDebugEvent
+// Date: 2018/5/9 0:43
+// Author : RuiQiYang
+//************************************
+BOOL CExceptionHandle::GetCurrentModules(list<DLLNODE>& DllList, HANDLE hProcess, DEBUG_EVENT DebugEvent)
+{
+	DLLNODE DllNode;
+	PDWORD	pdwOldProtect = NULL;
+	byte	*pBuffer = NULL;
+	DWORD	dwPagCount = 0;
+	int		i = 0;
+	DWORD	dwTmp = 0;
+	PIMAGE_DOS_HEADER pPeDos = NULL;
+	PIMAGE_NT_HEADERS pNtHeaders = NULL;
+	PIMAGE_OPTIONAL_HEADER pOptional = NULL;
+
+	//win7
+	DWORD dwOldProtect;
+
+	//释放之前链表资源
+	DllList.clear();
+
+	//遍历加载模块
+	HANDLE hmodule = CreateToolhelp32Snapshot(TH32CS_SNAPMODULE, DebugEvent.dwProcessId);
+	if (hmodule == INVALID_HANDLE_VALUE)
+	{
+		printf("模块加载失败");
+		goto ERROR_EXIT;
+	}
+	MODULEENTRY32 me;
+	me.dwSize = sizeof(MODULEENTRY32);
+	if (Module32First(hmodule, &me))
+	{
+		do
+		{
+			
+			
+			//DllNode.dwModBase = (DWORD)me.modBaseAddr;
+			//DllNode.dwModSize = me.modBaseSize;
+			//DllNode.szModName = me.szModule;
+			//DllNode.szModPath = me.szExePath;
+			//解析pe结构拿入口点
+			//注释部分为xp系统的做法，win7系统读取ntdll会失败，一般pe pOptional位于前1K位置后面紧跟text段
+			//win7采用读取前1K数据分析入口点位置
+			pBuffer = new byte[0x1000];
+			if (pBuffer == NULL)
+			{
+				printf("模块加载失败2");
+				goto ERROR_EXIT;
+			}
+			VirtualProtectEx(hProcess, me.modBaseAddr, 1, PAGE_READWRITE, &dwOldProtect);
+			if (!ReadProcessMemory(hProcess, me.modBaseAddr, pBuffer, 0x1000, &dwTmp))
+			{
+				printf("模块加载失败3");
+				goto ERROR_EXIT;
+			}
+			if (dwTmp != 0x1000)
+			{
+				goto ERROR_EXIT;
+			}
+			//win7还原属性
+			VirtualProtectEx(hProcess, me.modBaseAddr, 1, dwOldProtect, &dwTmp);
+			//pe分析获取入口点
+			pPeDos = (PIMAGE_DOS_HEADER)pBuffer;
+			if (pPeDos->e_lfanew >= 0x1000)
+			{
+				//读取长度不够无法解析入口点
+				goto ERROR_EXIT;
+			}
+			pNtHeaders = (PIMAGE_NT_HEADERS)(pPeDos->e_lfanew + (UINT)pBuffer);
+			pOptional = &(pNtHeaders->OptionalHeader);
+			if ((UINT)pOptional - (UINT)pBuffer > 0x1000)
+			{
+				//读取长度不够无法解析入口点
+				goto ERROR_EXIT;
+			}
+			DWORD *pEntryPoint = &(pOptional->AddressOfEntryPoint);
+			if ((UINT)pEntryPoint - (UINT)pBuffer > 0x1000)
+			{
+				//读取长度不够无法解析入口点
+				goto ERROR_EXIT;
+			}
+
+			DllNode.dwModEntry = pOptional->AddressOfEntryPoint + (DWORD)me.modBaseAddr;
+
+			delete[] pBuffer;
+			pBuffer = NULL;
+			//添加模块信息到模块链表
+			m_DllList.push_back(DllNode);
+			printf("%p  %p  %p  ", (DWORD)me.modBaseAddr, me.modBaseSize, DllNode.dwModEntry);
+			wprintf(L"%-18s",me.szModule);
+			wprintf(me.szExePath);
+			printf("\r\n");
+		} while (::Module32Next(hmodule, &me));
+	}
+	CloseHandle(hmodule);
+	hmodule = INVALID_HANDLE_VALUE;
+
+	return TRUE;
+
+ERROR_EXIT:
+	if (pdwOldProtect)
+	{
+		for (int j = 0; j < i; j++)
+		{
+			VirtualProtectEx(hProcess, me.modBaseAddr + i * 0x1000, 1, pdwOldProtect[i], &dwTmp);
+		}
+		delete[] pdwOldProtect;
+	}
+	if (pBuffer)
+	{
+		delete[] pBuffer;
+	}
+	if (hmodule != INVALID_HANDLE_VALUE)
+	{
+		CloseHandle(hmodule);
+	}
+
+	//win7还原属性
+	VirtualProtectEx(hProcess, me.modBaseAddr, 1, dwOldProtect, &dwTmp);
+
+	return FALSE;
+}
+
+//************************************
+// Method:    ShowMod
+// FullName:  CExceptionHandle::ShowMod
+// Description:显示模块
+// Access:    public 
+// Returns:   BOOL
+// Qualifier:
+// Date: 2018/5/9 0:50
+// Author : RuiQiYang
+//************************************
+BOOL CExceptionHandle::ShowMod()
+{
+	//显示模块信息
+	printf("Base      Size      Entry     Name          Path    \r\n");
+	if (GetCurrentModules(m_DllList, m_ProInfo.hProcess, m_dbgEvent) == FALSE)
+	{
+		return FALSE;
+	}
+	
+//	list<DLLNODE>::iterator itDll;
+//	for (itDll = m_DllList.begin(); itDll != m_DllList.end(); itDll++)
+//	{
+//		PDLLNODE pDllNode = &(*itDll);
+//		printf("%p  %p  %p  ", pDllNode->dwModBase, pDllNode->dwModSize, pDllNode->dwModEntry);
+//		printf("%-14s", pDllNode->szModName);
+//		//printf(" ");
+//		WCHAR*temp = pDllNode->szModPath;
+//		//printf(pDllNode->szModPath);
+//		wprintf(temp);
+//		printf("\r\n");
+//	}
+	printf("\r\n");
 	return TRUE;
 }
