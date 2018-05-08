@@ -212,9 +212,13 @@ BOOL CExceptionHandle::WaitUserInput()
 		char buffer[20] = {};
 		char *CmdBuf = nullptr;
 		char *NumBuf = nullptr;
+		
 		DWORD addr = 0;
 		printf("请输入：");
 		gets_s(buffer, 20);
+		char buffer1[20] = {};
+		memcpy(buffer1, buffer, sizeof(buffer));
+		char* tempBuf = buffer;
 		CmdBuf = strtok_s(buffer, " ", &NumBuf);
 		sscanf_s(NumBuf, "%x", &addr);
 		//单步
@@ -251,9 +255,18 @@ BOOL CExceptionHandle::WaitUserInput()
 			//返回
 			return 0;
 		}
+
 		if (strcmp("u", CmdBuf) == 0)//查看反汇编
 		{
 			Print(addr);
+		}
+		if (strcmp("editasm", CmdBuf) == 0)//修改汇编
+		{
+			Editasm(addr);
+		}
+		if (strcmp("stack", CmdBuf) == 0)//查看栈信息
+		{
+			PrintStack();
 		}
 		if (strcmp("h", CmdBuf) == 0|| strcmp("help", CmdBuf) == 0)//查看帮助文档
 		{
@@ -261,9 +274,9 @@ BOOL CExceptionHandle::WaitUserInput()
 		}
 		if (strcmp("r", CmdBuf) == 0)//查看和修改寄存器
 		{
-			if (2 == GetParamCount(buffer))
+			if (2 == GetParamCount(buffer1))
 			{
-				//EditRegisterValue(buffer);
+				EditRegisterValue(buffer1);
 			}
 			PrintContext();
 		}
@@ -303,8 +316,10 @@ void CExceptionHandle::PrintCommandHelp(char ch)
 		printf("p                                单步步过\r\n");
 		printf("r                                查看修改寄存器\r\n");
 		printf("u [目标地址]                     反汇编\r\n");
+		printf("editasm [目标地址]               修改汇编代码\r\n");
 		printf("? 或  h                          查看帮助\r\n");
 		printf("g [目标地址]                     执行到目标地址处\r\n");
+		printf("stack                            查看栈信息\r\n");
 		printf("\t如果后面指定地址，中间的断点将全部失效\r\n");
 		printf("l                                显示PE信息\r\n");
 		printf("d [目标起始地址] [目标终址地址]/[长度] 查看内存\r\n");
@@ -372,6 +387,36 @@ void CExceptionHandle::PrintContext()
 }
 
 //************************************
+// Method:    PrintStack
+// FullName:  CExceptionHandle::PrintStack
+// Description:查看栈信息
+// Access:    public 
+// Returns:   void
+// Qualifier:
+// Date: 2018/5/8 10:49
+// Author : RuiQiYang
+//************************************
+void CExceptionHandle::PrintStack()
+{
+	CONTEXT context;
+	context.ContextFlags = CONTEXT_FULL | CONTEXT_DEBUG_REGISTERS;
+
+	if (FALSE == GetCurrentThreadContext(&context))
+	{
+		return;
+	}
+	DWORD buff[5];
+	SIZE_T read = 0;
+	if (!ReadProcessMemory(m_ProInfo.hProcess, (LPVOID)context.Esp, buff, 20, &read)) {
+		DBGPRINT("读取进程内存失败");
+	}
+	for (int i = 0;i < 5;++i) {
+		printf("\t%08X|%08X\n", context.Esp + i * 4,buff[i]);
+	}
+	printf("EAX=%p  \n", context.Esp);
+}
+
+//************************************
 // Method:    GetCurrentThreadContext
 // FullName:  CExceptionHandle::GetCurrentThreadContext
 // Description:获取当前线程上下文
@@ -382,7 +427,7 @@ void CExceptionHandle::PrintContext()
 // Date: 2018/5/7 21:28
 // Author : RuiQiYang
 //************************************
-BOOL CExceptionHandle::GetCurrentThreadContext(OUT CONTEXT * pContext)
+BOOL CExceptionHandle::GetCurrentThreadContext(CONTEXT * pContext)
 {
 	if (NULL == pContext)
 	{
@@ -412,5 +457,435 @@ BOOL CExceptionHandle::GetCurrentThreadContext(OUT CONTEXT * pContext)
 
 	CloseHandle(m_hThread);
 	m_hThread = NULL;
+	return TRUE;
+}
+
+//************************************
+// Method:    SetCurrentThreadContext
+// FullName:  CExceptionHandle::SetCurrentThreadContext
+// Description:设置当前线程上下文
+// Access:    public 
+// Returns:   BOOL
+// Qualifier:
+// Parameter: IN CONTEXT * pContext
+// Date: 2018/5/8 9:03
+// Author : RuiQiYang
+//************************************
+BOOL CExceptionHandle::SetCurrentThreadContext(CONTEXT * pContext)
+{
+
+	if (NULL == pContext)
+	{
+		return FALSE;
+	}
+
+	if (0 == m_dbgEvent.dwThreadId)
+	{
+		return FALSE;
+	}
+
+	m_hThread = OpenThread(THREAD_ALL_ACCESS, FALSE, m_dbgEvent.dwThreadId);
+
+	if (NULL == m_hThread)
+	{
+		return FALSE;
+	}
+
+	if (FALSE == SetThreadContext(m_hThread, pContext))
+	{
+		CloseHandle(m_hThread);
+		m_hThread = NULL;
+		return FALSE;
+	}
+
+	CloseHandle(m_hThread);
+	m_hThread = NULL;
+	return TRUE;
+}
+
+//************************************
+// Method:    EditRegisterValue
+// FullName:  CExceptionHandle::EditRegisterValue
+// Description:修改寄存器的值,通过16进制安全输入排除了寄存器名字，只剩16进制数
+// Access:    public 
+// Returns:   int
+// Qualifier:
+// Parameter: char * pszCmd
+// Date: 2018/5/8 8:27
+// Author : RuiQiYang
+//************************************
+int CExceptionHandle::EditRegisterValue(char * pszCmd)
+{
+
+	{
+		if (NULL == pszCmd)
+		{
+			return 0;
+		}
+
+
+		
+
+
+		char szRegister[BUFFER_MAX] = { 0 };
+		unsigned int nRegisterValue = 0;
+		
+		//char *regBuf = nullptr;
+		//char *NumBuf = nullptr;
+		//regBuf = strtok_s(pszCmd, " ", &NumBuf);
+
+		sscanf_s(pszCmd, "%s%s", stderr,20, szRegister,20);
+		CONTEXT context;
+		context.ContextFlags = CONTEXT_DEBUG_REGISTERS | CONTEXT_FULL;
+
+		if (FALSE == GetCurrentThreadContext(&context))
+		{
+			return 0;
+		}
+
+		if (NULL != strstr(szRegister, "eax"))
+		{
+			printf("EAX: %p\r\nEAX: ", context.Eax);
+			if (0 == SafeHexInput(szRegister, BUFFER_MAX))
+			{
+				return 0;
+			}
+			sscanf_s(szRegister, "%x", &nRegisterValue);//将之前输入的16进制数给nRegisterValue
+			context.Eax = nRegisterValue;
+			if (FALSE == SetCurrentThreadContext(&context))
+			{
+				return 0;
+			}
+			return 1;
+		}
+		else if (NULL != strstr(szRegister, "ax"))
+		{
+			printf("AX: %p\r\nAX: ", 0xffff & context.Eax);
+
+			if (0 == SafeHexInput(szRegister, BUFFER_MAX))
+			{
+				return 0;
+			}
+			sscanf_s(szRegister, "%x", &nRegisterValue);
+
+			context.Eax = (context.Eax >> 16 << 16);
+			context.Eax |= (nRegisterValue & 0xffff);
+			if (FALSE == SetCurrentThreadContext(&context))
+			{
+				return 0;
+			}
+			return 1;
+		}
+		else if (NULL != strstr(szRegister, "ebx"))
+		{
+			printf("EBX: %p\r\nEBX: ", context.Ebx);
+			if (0 == SafeHexInput(szRegister, BUFFER_MAX))
+			{
+				return 0;
+			}
+			sscanf_s(szRegister, "%x", &nRegisterValue);
+			context.Ebx = nRegisterValue;
+			if (FALSE == SetCurrentThreadContext(&context))
+			{
+				return 0;
+			}
+			return 1;
+		}
+		else if (NULL != strstr(szRegister, "bx"))
+		{
+			printf("BX: %p\r\nBX: ", 0xffff & context.Ebx);
+			if (0 == SafeHexInput(szRegister, BUFFER_MAX))
+			{
+				return 0;
+			}
+			sscanf_s(szRegister, "%x", &nRegisterValue);
+			context.Ebx = (context.Ebx >> 16 << 16);
+			context.Ebx |= (nRegisterValue & 0xffff);
+			if (FALSE == SetCurrentThreadContext(&context))
+			{
+				return 0;
+			}
+			return 1;
+		}
+		else if (NULL != strstr(szRegister, "ecx"))
+		{
+			printf("ECX: %p\r\nECX: ", context.Ecx);
+			if (0 == SafeHexInput(szRegister, BUFFER_MAX))
+			{
+				return 0;
+			}
+			sscanf_s(szRegister, "%x", &nRegisterValue);
+			context.Ecx = nRegisterValue;
+			if (FALSE == SetCurrentThreadContext(&context))
+			{
+				return 0;
+			}
+			return 1;
+		}
+		else if (NULL != strstr(szRegister, "cx"))
+		{
+			printf("CX: %p\r\nCX: ", 0xffff & context.Ecx);
+			if (0 == SafeHexInput(szRegister, BUFFER_MAX))
+			{
+				return 0;
+			}
+			sscanf_s(szRegister, "%x", &nRegisterValue);
+			context.Ecx = (context.Ecx >> 16 << 16);
+			context.Ecx |= (nRegisterValue & 0xffff);
+			if (FALSE == SetCurrentThreadContext(&context))
+			{
+				return 0;
+			}
+			return 1;
+		}
+		else if (NULL != strstr(szRegister, "edx"))
+		{
+			printf("EDX: %p\r\nEDX: ", context.Edx);
+			if (0 == SafeHexInput(szRegister, BUFFER_MAX))
+			{
+				return 0;
+			}
+			sscanf_s(szRegister, "%x", &nRegisterValue);
+			context.Edx = nRegisterValue;
+			if (FALSE == SetCurrentThreadContext(&context))
+			{
+				return 0;
+			}
+			return 1;
+		}
+		else if (NULL != strstr(szRegister, "dx"))
+		{
+			printf("DX: %p\r\nDX: ", 0xffff & context.Edx);
+			if (0 == SafeHexInput(szRegister, BUFFER_MAX))
+			{
+				return 0;
+			}
+			sscanf_s(szRegister, "%x", &nRegisterValue);
+			context.Edx = (context.Edx >> 16 << 16);
+			context.Edx |= (nRegisterValue & 0xffff);
+			if (FALSE == SetCurrentThreadContext(&context))
+			{
+				return 0;
+			}
+			return 1;
+		}
+		else if (NULL != strstr(szRegister, "esi"))
+		{
+			printf("ESI: %p\r\nESI: ", context.Esi);
+			if (0 == SafeHexInput(szRegister, BUFFER_MAX))
+			{
+				return 0;
+			}
+			sscanf_s(szRegister, "%x", &nRegisterValue);
+			context.Esi = nRegisterValue;
+			if (FALSE == SetCurrentThreadContext(&context))
+			{
+				return 0;
+			}
+			return 1;
+		}
+		else if (NULL != strstr(szRegister, "edi"))
+		{
+			printf("EDI: %p\r\nEDI: ", context.Edi);
+			if (0 == SafeHexInput(szRegister, BUFFER_MAX))
+			{
+				return 0;
+			}
+			sscanf_s(szRegister, "%x", &nRegisterValue);
+			context.Edi = nRegisterValue;
+			if (FALSE == SetCurrentThreadContext(&context))
+			{
+				return 0;
+			}
+			return 1;
+		}
+		else if (NULL != strstr(szRegister, "eip"))
+		{
+			printf("EIP: %p\r\nEIP: ", context.Eip);
+			if (0 == SafeHexInput(szRegister, BUFFER_MAX))
+			{
+				return 0;
+			}
+			sscanf_s(szRegister, "%x", &nRegisterValue);
+			context.Eip = nRegisterValue;
+			if (FALSE == SetCurrentThreadContext(&context))
+			{
+				return 0;
+			}
+			return 1;
+		}
+		else if (NULL != strstr(szRegister, "esp"))
+		{
+			printf("ESP: %p\r\nESP: ", context.Esp);
+			if (0 == SafeHexInput(szRegister, BUFFER_MAX))
+			{
+				return 0;
+			}
+			sscanf_s(szRegister, "%x", &nRegisterValue);
+			context.Esp = nRegisterValue;
+			if (FALSE == SetCurrentThreadContext(&context))
+			{
+				return 0;
+			}
+			return 1;
+		}
+		else if (NULL != strstr(szRegister, "ebp"))
+		{
+			printf("EBP: %p\r\nEBP: ", context.Ebp);
+			if (0 == SafeHexInput(szRegister, BUFFER_MAX))
+			{
+				return 0;
+			}
+			sscanf_s(szRegister, "%x", &nRegisterValue);
+			context.Ebp = nRegisterValue;
+			if (FALSE == SetCurrentThreadContext(&context))
+			{
+				return 0;
+			}
+			return 1;
+		}
+		else if (NULL != strstr(szRegister, "cs"))
+		{
+			printf("CS: %p\r\nCS: ", context.SegCs);
+			if (0 == SafeHexInput(szRegister, BUFFER_MAX))
+			{
+				return 0;
+			}
+			sscanf_s(szRegister, "%x", &nRegisterValue);
+			context.SegCs = nRegisterValue;
+			if (FALSE == SetCurrentThreadContext(&context))
+			{
+				return 0;
+			}
+			return 1;
+		}
+		else if (NULL != strstr(szRegister, "ss"))
+		{
+			printf("SS: %p\r\nSS: ", context.SegSs);
+			if (0 == SafeHexInput(szRegister, BUFFER_MAX))
+			{
+				return 0;
+			}
+			sscanf_s(szRegister, "%x", &nRegisterValue);
+			context.SegSs = nRegisterValue;
+			if (FALSE == SetCurrentThreadContext(&context))
+			{
+				return 0;
+			}
+			return 1;
+		}
+		else if (NULL != strstr(szRegister, "ds"))
+		{
+			printf("DS: %p\r\nDS: ", context.SegDs);
+			if (0 == SafeHexInput(szRegister, BUFFER_MAX))
+			{
+				return 0;
+			}
+			sscanf_s(szRegister, "%x", &nRegisterValue);
+			context.SegDs = nRegisterValue;
+			if (FALSE == SetCurrentThreadContext(&context))
+			{
+				return 0;
+			}
+			return 1;
+		}
+		else if (NULL != strstr(szRegister, "es"))
+		{
+			printf("ES: %p\r\nES: ", context.SegEs);
+			if (0 == SafeHexInput(szRegister, BUFFER_MAX))
+			{
+				return 0;
+			}
+			sscanf_s(szRegister, "%x", &nRegisterValue);
+			context.SegEs = nRegisterValue;
+			if (FALSE == SetCurrentThreadContext(&context))
+			{
+				return 0;
+			}
+			return 1;
+		}
+		else if (NULL != strstr(szRegister, "fs"))
+		{
+			printf("FS: %p\r\nFS: ", context.SegFs);
+			if (0 == SafeHexInput(szRegister, BUFFER_MAX))
+			{
+				return 0;
+			}
+			sscanf_s(szRegister, "%x", &nRegisterValue);
+			context.SegFs = nRegisterValue;
+			if (FALSE == SetCurrentThreadContext(&context))
+			{
+				return 0;
+			}
+			return 1;
+		}
+		else if (NULL != strstr(szRegister, "gs"))
+		{
+			printf("GS: %p\r\nGS: ", context.SegGs);
+			if (0 == SafeHexInput(szRegister, BUFFER_MAX))
+			{
+				return 0;
+			}
+			sscanf_s(szRegister, "%x", &nRegisterValue);
+			context.SegGs = nRegisterValue;
+			if (FALSE == SetCurrentThreadContext(&context))
+			{
+				return 0;
+			}
+			return 1;
+		}
+		return 0;
+	}
+}
+
+//************************************
+// Method:    Editasm
+// FullName:  CExceptionHandle::Editasm
+// Description:修改汇编数据
+// Access:    public 
+// Returns:   BOOL
+// Qualifier:
+// Parameter: SIZE_T dwAddress
+// Date: 2018/5/8 14:16
+// Author : RuiQiYang
+//************************************
+BOOL CExceptionHandle::Editasm(SIZE_T dwAddress)
+{
+	BYTE oldbyte;
+	DWORD oldProtect;
+	DWORD len;
+
+
+	XEDPARSE xed = { 0 };
+	printf("地址：");
+
+	// 接受生成opcode的的初始地址
+	xed.cip = dwAddress;
+	// 接收指令
+	printf("指令：");
+	gets_s(xed.instr, XEDPARSE_MAXBUFSIZE);
+
+	// xed.cip, 汇编带有跳转偏移的指令时,需要配置这个字段
+	if (XEDPARSE_OK != XEDParseAssemble(&xed))
+	{
+		printf("指令错误：%s\n", xed.error);
+	}
+
+	// 打印汇编指令所生成的opcode
+	printf("%08X : ", xed.cip);
+	printOpcode(xed.dest, xed.dest_size);
+	printf("指令大小%d\n", xed.dest_size);
+	printf("\n");
+	SIZE_T dwRead = 0;
+	int te = strlen(opcode);
+	bool bo1 = VirtualProtectEx(m_ProInfo.hProcess, (LPVOID)dwAddress, te + 1, PAGE_READWRITE, &oldProtect);
+	SIZE_T write = 0;
+	if (!WriteProcessMemory(m_ProInfo.hProcess, (LPVOID)xed.cip, &xed.dest, xed.dest_size, &write))
+	{
+		DBGPRINT("写入内存失败");
+		return FALSE;
+	}
+	VirtualProtectEx(m_ProInfo.hProcess, (LPVOID)dwAddress, te + 1, oldProtect, &oldProtect);
+
 	return TRUE;
 }
