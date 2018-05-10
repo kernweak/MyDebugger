@@ -12,9 +12,10 @@ public:
 	BOOL SetCcPoint(SIZE_T dwAddress, BOOL TempCC);//设置软件断点
 	BOOL ResetDelCcPoint(SIZE_T dwAddress);//去除CC断点
 	BOOL DelCcPoint(SIZE_T dwAddress, BOOL TempCC);//删除CC断点
+	
 public:
 	DEBUG_EVENT m_dbgEvent = { 0 };
-	vector<CCBPINFO>m_VecCCBp; //软件断点数组
+	//vector<CCBPINFO>m_VecCCBp; //软件断点数组
 	PROCESS_INFORMATION m_ProInfo = {};//进程信息
 };
 

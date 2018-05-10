@@ -3,11 +3,13 @@
 
 
 CExceptionHandle::CExceptionHandle()
+:m_nIsTCommand(0)
 {
 }
 //带传入参数的构造函数
 CExceptionHandle::CExceptionHandle(DEBUG_EVENT dbgEvent)
-:m_dbgEvent(dbgEvent)
+:m_dbgEvent(dbgEvent),
+ m_nIsTCommand(0)
 {
 }
 
@@ -39,7 +41,7 @@ DWORD CExceptionHandle::OnException(DEBUG_EVENT & dbgEvent)
 		FALSE,
 		m_dbgEvent.dwProcessId);
 
-	HANDLE hThrad = OpenThread(THREAD_ALL_ACCESS,
+	theThread = OpenThread(THREAD_ALL_ACCESS,
 		FALSE,
 		m_dbgEvent.dwThreadId);
 	//异常事件就是系统断点
@@ -60,18 +62,22 @@ DWORD CExceptionHandle::OnException(DEBUG_EVENT & dbgEvent)
 		//      用户输入 F5 所有断点也不需要恢复
 		WaitUserInput();
 		break;
-		break;
 	case EXCEPTION_ACCESS_VIOLATION://内存访问异常
 		break;
 	case EXCEPTION_SINGLE_STEP:
+		ParseSingleSetp();
+		//WaitUserInput();
 		break;
 	default:
 
 		break;
 	}
 
-	CloseHandle(hThrad);
+	CloseHandle(theThread);
 	CloseHandle(hProc);
+
+
+	return DBG_CONTINUE;
 	if (flag == FALSE) {
 		return DBG_EXCEPTION_NOT_HANDLED;
 	}
@@ -131,12 +137,43 @@ BOOL CExceptionHandle::ResetDelAllPoint()
 	BYTE oldbyte;
 	DWORD oldProtect;
 	DWORD len;
+
+
 	for (auto i : g_VecCCBp) {
 		oldbyte = i.OldCode;
 		VirtualProtectEx(m_ProInfo.hProcess, (LPVOID)i.dwAddress, 1, PAGE_READWRITE, &oldProtect);
 		if (!WriteProcessMemory(m_ProInfo.hProcess, (LPVOID)i.dwAddress, &oldbyte, 1, &len)) return FALSE;
 		VirtualProtectEx(m_ProInfo.hProcess, (LPVOID)i.dwAddress, 1, oldProtect, &oldProtect);
 	}
+	CONTEXT ct = { 0 };
+	ct.ContextFlags = CONTEXT_DEBUG_REGISTERS;
+	HANDLE temhThread = GetCurrentThread();
+	GetThreadContext(theThread, &ct);
+	DBG_REG7* pD7 = (DBG_REG7*)&ct.Dr7;
+	for (auto i : g_HardBp) {
+		VirtualProtectEx(m_ProInfo.hProcess, (LPVOID)i.lpBpAddr, 1, PAGE_READWRITE, &oldProtect);
+		switch (i.dwBpOrder)
+		{
+		case 0:
+			pD7->L0 = 0;
+			break;
+		case 1:
+			pD7->L1 = 0;
+			break;
+		case 2:
+			pD7->L2 = 0;
+			break;
+		case 3:
+			pD7->L3 = 0;
+			break;
+		default:
+			break;
+		}
+		i.isActive = FALSE;
+	//	if (!WriteProcessMemory(m_ProInfo.hProcess, (LPVOID)i.lpBpAddr, &oldbyte, 1, &len)) return FALSE;
+		VirtualProtectEx(m_ProInfo.hProcess, (LPVOID)i.lpBpAddr, 1, oldProtect, &oldProtect);
+	}
+	SetThreadContext(theThread, &ct);
 	return TRUE;
 }
 
@@ -165,9 +202,45 @@ BOOL CExceptionHandle::ResetSetAllPoint()
 		if (!WriteProcessMemory(m_ProInfo.hProcess, (LPVOID)i.dwAddress, &Int3, 1, &len)) return FALSE;
 		VirtualProtectEx(m_ProInfo.hProcess, (LPVOID)i.dwAddress, 1, oldProtect, &oldProtect);
 	}
+
+
+	CONTEXT ct = { 0 };
+	ct.ContextFlags = CONTEXT_DEBUG_REGISTERS | CONTEXT_FULL;
+	HANDLE temhThread = GetCurrentThread();
+	GetThreadContext(theThread, &ct);
+	DBG_REG7* pD7 = (DBG_REG7*)&ct.Dr7;
+	for (auto i : g_HardBp) {
+		//VirtualProtectEx(m_ProInfo.hProcess, (LPVOID)i.lpBpAddr, 1, PAGE_READWRITE, &oldProtect);
+		switch (i.dwBpOrder)
+		{
+		case 0:
+			pD7->L0 = 1;
+			//保存 下 dr6 的值 
+			//外边做判断
+			m_pDR6 = (DWORD)ct.Dr6;
+			break;
+		case 1:
+			pD7->L1 = 1;
+			m_pDR6 = (DWORD)ct.Dr6;
+			break;
+		case 2:
+			pD7->L2 = 1;
+			m_pDR6 = (DWORD)ct.Dr6;
+			break;
+		case 3:
+			pD7->L3 = 1;
+			m_pDR6 = (DWORD)ct.Dr6;
+			break;
+		default:
+			break;
+		}
+		i.isActive = TRUE;
+	//	VirtualProtectEx(m_ProInfo.hProcess, (LPVOID)i.lpBpAddr, 1, oldProtect, &oldProtect);
+		
+	}
+	SetThreadContext(theThread, &ct);
 	return TRUE;
 }
-
 //************************************
 // Method:    Print
 // FullName:  CExceptionHandle::Print
@@ -437,7 +510,9 @@ int CExceptionHandle::IsEffectiveAddress(IN LPVOID lpAddr, IN PMEMORY_BASIC_INFO
 //************************************
 BOOL CExceptionHandle::WaitUserInput()
 {
-	while (1)
+	BOOL  bFlag = TRUE;
+	BOOL  isUCommand = FALSE;//是否是U命令
+	while (bFlag)
 	{
 		fflush(stdin);
 		CMyDebuggerFramWork temFramWork;
@@ -459,6 +534,13 @@ BOOL CExceptionHandle::WaitUserInput()
 		if(CmdBuf==NULL)continue;
 		if (strcmp("t", CmdBuf) == 0)//DOF7
 		{
+			DWORD dwEip = 0;
+			dwEip = GetCurrentEip(m_dbgEvent.dwThreadId);
+			PrintInstruction(dwEip, 0, 1);
+
+
+			isUCommand = FALSE;
+			m_nIsTCommand = TRUE;// 之前是否是T命令
 			ResetDelAllPoint();
 			PEFLAGS  eflag = (PEFLAGS)&TheContext.EFlags;
 			eflag->TF = 1;
@@ -470,30 +552,57 @@ BOOL CExceptionHandle::WaitUserInput()
 		}
 
 		//设置断点
-		if (strcmp("bp", CmdBuf) == 0)
-		{
-			temFramWork.SetCcPoint(addr, 0);
+		if ('b' == CmdBuf[0]) { // 处理B命令的命令，比如bp, ba, bd
+			isUCommand = FALSE;
+			ParseBCommand(buffer1);
 		}
+	//	if (strcmp("b", CmdBuf) == 0) {
+	//			 // 处理B命令的命令，比如bp, ba, bd
+	//			
+	//	}
 
 		if (strcmp("g", CmdBuf) == 0)
 		{
-			ResetSetAllPoint();
+			ResetDelAllPoint();
+			CONTEXT context = {};
+			context.ContextFlags = CONTEXT_DEBUG_REGISTERS | CONTEXT_FULL;
+			GetThreadContext(m_ProInfo.hThread,&context);
+			PEFLAGS  eflag = (PEFLAGS)&context.EFlags;
+			eflag->TF = 1;
+			SetThreadContext(m_ProInfo.hThread, &context);
+
+			isGo = true;
 			//如果当前EIP 在断点列表中则还原原来的代码 让程序跑起来
-			temFramWork.ResetDelCcPoint(TheContext.Eip);
+			//temFramWork.ResetDelCcPoint(TemContext.Eip);
 			////判断 是怎么停下来的
+			//DWORD dwEip = 0;
+			//dwEip = GetCurrentEip(m_dbgEvent.dwThreadId);
 			//// 单步走下来的    eip==异常地址
+			//if (m_nIsTCommand) {
+			//	return true;
+			//}
 			////断点下来的       eip==异常地址-1
+			//else {
+			//	CONTEXT context;
+			//	context.ContextFlags = CONTEXT_DEBUG_REGISTERS | CONTEXT_FULL;
+			//	context.Eip = dwEip - 1;
+			//	SetCurrentThreadContext(&context);
+			//}
 			//if ((DWORD)mDebEv.u.Exception.ExceptionRecord.ExceptionAddress == TheContext.Eip)
 			//	return 0;
 
 			//设置所有断点
+			//ResetSetAllPoint();
 			//返回
-			return 0;
+			return TRUE;
 		}
 
 		if (strcmp("u", CmdBuf) == 0)//查看反汇编
 		{
-			Print(addr);
+			
+				Ucommand(buffer1, isUCommand);
+			
+			//Print(addr);
 		}
 		if (strcmp("d", CmdBuf) == 0)//查看内存
 		{
@@ -522,11 +631,18 @@ BOOL CExceptionHandle::WaitUserInput()
 		}
 		if (strcmp("r", CmdBuf) == 0)//查看和修改寄存器
 		{
+			isUCommand = FALSE;
 			if (2 == GetParamCount(buffer1))
 			{
 				EditRegisterValue(buffer1);
 			}
 			PrintContext();
+		}
+		if (strcmp("q", CmdBuf) == 0)//是否是退出
+		{
+			ExitProcess(0);
+			bFlag = FALSE;
+			return 0;
 		}
 
 	}
@@ -1213,8 +1329,12 @@ BOOL CExceptionHandle::GetCurrentModules(list<DLLNODE>& DllList, HANDLE hProcess
 		{
 			
 			
-			//DllNode.dwModBase = (DWORD)me.modBaseAddr;
-			//DllNode.dwModSize = me.modBaseSize;
+			DllNode.dwModBase = (DWORD)me.modBaseAddr;
+			DllNode.dwModSize = me.modBaseSize;
+			DllNode.szModName = new WCHAR[sizeof(me.szModule) + 1]{};
+			memcpy(DllNode.szModName, me.szModule, sizeof(me.szModule));
+			DllNode.szModPath = new WCHAR[sizeof(me.szExePath) + 1]{};
+			memcpy(DllNode.szModPath, me.szExePath, sizeof(me.szExePath));
 			//DllNode.szModName = me.szModule;
 			//DllNode.szModPath = me.szExePath;
 			//解析pe结构拿入口点
@@ -1265,10 +1385,10 @@ BOOL CExceptionHandle::GetCurrentModules(list<DLLNODE>& DllList, HANDLE hProcess
 			pBuffer = NULL;
 			//添加模块信息到模块链表
 			m_DllList.push_back(DllNode);
-			printf("%p  %p  %p  ", (DWORD)me.modBaseAddr, me.modBaseSize, DllNode.dwModEntry);
-			wprintf(L"%-18s",me.szModule);
-			wprintf(me.szExePath);
-			printf("\r\n");
+		//	printf("%p  %p  %p  ", (DWORD)me.modBaseAddr, me.modBaseSize, DllNode.dwModEntry);
+		//	wprintf(L"%-18s",me.szModule);
+		//	wprintf(me.szExePath);
+		//	printf("\r\n");
 		} while (::Module32Next(hmodule, &me));
 	}
 	CloseHandle(hmodule);
@@ -1319,18 +1439,442 @@ BOOL CExceptionHandle::ShowMod()
 		return FALSE;
 	}
 	
-//	list<DLLNODE>::iterator itDll;
-//	for (itDll = m_DllList.begin(); itDll != m_DllList.end(); itDll++)
-//	{
-//		PDLLNODE pDllNode = &(*itDll);
-//		printf("%p  %p  %p  ", pDllNode->dwModBase, pDllNode->dwModSize, pDllNode->dwModEntry);
-//		printf("%-14s", pDllNode->szModName);
-//		//printf(" ");
-//		WCHAR*temp = pDllNode->szModPath;
-//		//printf(pDllNode->szModPath);
-//		wprintf(temp);
-//		printf("\r\n");
-//	}
+	list<DLLNODE>::iterator itDll;
+	for (itDll = m_DllList.begin(); itDll != m_DllList.end(); itDll++)
+	{
+		PDLLNODE pDllNode = &(*itDll);
+		printf("%p  %p  %p  ", pDllNode->dwModBase, pDllNode->dwModSize, pDllNode->dwModEntry);
+		wprintf(L"%-18s", pDllNode->szModName);
+		printf(" ");
+		wprintf(pDllNode->szModPath);
+		printf("\r\n");
+	}
 	printf("\r\n");
 	return TRUE;
 }
+
+//************************************
+// Method:    ParseSingleSetp
+// FullName:  CExceptionHandle::ParseSingleSetp
+// Description:处理单步
+// Access:    public 
+// Returns:   int
+// Qualifier:
+// Date: 2018/5/9 18:49
+// Author : RuiQiYang
+//************************************
+int CExceptionHandle::ParseSingleSetp()
+{
+
+	//Thect
+	ResetSetAllPoint();
+	DBG_REG6* pDR6 =(DBG_REG6*) &m_pDR6;
+	//判断是不是硬件断点
+	//ct.ContextFlags = CONTEXT_DEBUG_REGISTERS | CONTEXT_FULL;
+	//GetThreadContext(theThread, &ct);
+	
+	if (pDR6->B0 == 1 || pDR6->B1 == 1 || pDR6->B2 == 1) {
+	//	ResetSetAllPoint();
+		printf("硬件断点断下\n");
+		WaitUserInput();
+	}
+
+	if (isGo)
+	{
+		/*CONTEXT ct = { 0 };
+		ct.ContextFlags = CONTEXT_DEBUG_REGISTERS | CONTEXT_FULL;
+		GetThreadContext(theThread, &ct);
+		DBG_REG7* pD7 = (DBG_REG7*)&ct.Dr7;
+
+		pD7->RW0 = 0;
+		pD7->LEN0 = 0;
+		pD7->L0 = 1;
+
+		SetThreadContext(theThread, &ct);*/
+		return 0;
+	}
+
+	if (m_nIsTCommand) {
+		
+		ResetSetAllPoint();
+		WaitUserInput();
+	}
+	
+
+	return 0;
+}
+
+//************************************
+// Method:    PrintInstruction
+// FullName:  CExceptionHandle::PrintInstruction
+// Description:输出指令
+// Access:    public 
+// Returns:   int
+// Qualifier:
+// Parameter: IN int Eip
+// Parameter: IN BOOL bIsContimue
+// Parameter: IN int nItem
+// Date: 2018/5/9 18:16
+// Author : RuiQiYang
+//************************************
+VOID CExceptionHandle::PrintInstruction(int Eip,BOOL bContinue, int nItem)
+{
+	if (INVALID_HANDLE_VALUE == m_ProInfo.hProcess)
+	{
+		OutputDebugString(_T("PrintDebugInfo进程句柄无效\n"));
+		return;
+	}
+	CONTEXT context;
+	context.ContextFlags = CONTEXT_FULL | CONTEXT_DEBUG_REGISTERS;
+	if (FALSE == GetCurrentThreadContext(&context))
+		return;
+	DWORD dwTempEip = context.Eip;
+	DWORD dwProtect = 0;
+	if (0 != Eip)
+	{
+		if (FALSE == VirtualProtectEx(m_ProInfo.hProcess, (LPVOID)Eip, MAX_PATH,
+			PAGE_EXECUTE_READWRITE, &dwProtect))
+		{
+			return;
+		}
+	}
+	else
+	{
+		if (FALSE == VirtualProtectEx(m_ProInfo.hProcess, (LPVOID)dwTempEip, MAX_PATH,
+			PAGE_EXECUTE_READWRITE, &dwProtect))
+		{
+			return;
+		}
+	}
+	//设置静态变量用于继续下轮指令
+	static DWORD dwEip = 0;
+	if (FALSE == bContinue)
+	{
+		dwEip = Eip;
+	}
+	ResetDelAllPoint();
+	char szBuf[MAX_PATH] = { 0 };
+	DWORD dwNumOfBytesRead = 0;
+	if (FALSE == ReadProcessMemory(m_ProInfo.hProcess, (PVOID)dwEip, szBuf, MAX_PATH, &dwNumOfBytesRead))
+	{
+		OutputDebugString(_T("Eip读取失败\n"));
+		return;
+	}
+	DISASM disAsm = { 0 };
+	int		 nLen = 0;		//指令长度
+	disAsm.EIP = (UIntPtr)szBuf;
+	disAsm.VirtualAddr = (UInt64)dwEip;
+	disAsm.Archi = 0; //x86汇编
+	//for (int i = 0;i < dwCount;++i)
+	for (int i = 0;i < nItem;++i)
+	{
+		nLen = Disasm(&disAsm);
+		if (nLen == -1)//反汇编失败会返回1
+			break;
+		//printf("%p\t%0X\t%s\n",disAsm.EIP,disAsm.Instruction,disAsm.CompleteInstr);
+		printf("%08X  ", disAsm.VirtualAddr);
+		printf("%s", disAsm.CompleteInstr);
+		printf("\n");
+		disAsm.EIP += nLen;
+		disAsm.VirtualAddr += nLen;
+		dwEip += nLen;
+	}
+
+	ResetSetAllPoint();
+	if (0 != Eip)
+	{
+		if (FALSE == VirtualProtectEx(m_ProInfo.hProcess, (LPVOID)Eip, MAX_PATH,
+			dwProtect, &dwProtect))
+		{
+			return;
+		}
+	}
+	else
+	{
+		if (FALSE == VirtualProtectEx(m_ProInfo.hProcess, (LPVOID)dwTempEip, MAX_PATH,
+			dwProtect, &dwProtect))
+		{
+			return;
+		}
+	}
+}
+
+
+//************************************
+// Method:    Ucommand
+// FullName:  CExceptionHandle::Ucommand
+// Description:处理U命令
+// Access:    public 
+// Returns:   int
+// Qualifier:
+// Parameter: char * pszCmd
+// Date: 2018/5/9 17:59
+// Author : RuiQiYang
+//************************************
+int CExceptionHandle::Ucommand(char *pszCmd, BOOL bISContinue)
+{
+	DWORD dwEip = 0;
+	if (FALSE == bISContinue)
+	{
+		dwEip = GetCurrentEip(m_dbgEvent.dwThreadId);
+	}
+
+	int nStrLen = strlen(pszCmd);
+	if (1 == nStrLen || nStrLen >= BUFFER_MAX)
+	{
+		PrintInstruction(dwEip, bISContinue, 8);
+		return 1;
+	}
+
+	int nArgc = GetParamCount(pszCmd);
+
+	// 如果只有二个参数
+	// 这里为了方便以后扩展功能，同时做简单的安全检查
+	if (2 == nArgc)
+	{
+		sscanf_s(pszCmd, "%s%x", stderr,100, &dwEip);
+
+		/*
+		// 这里判断地址是否合法
+		if ((dwEip & 0x80000000) || (dwEip <= 0x4096))
+		{
+		return 0 ;
+		}
+		*/
+		// 这里判断一下地址是否处于有效的内存分页当中
+		int nPage = 0;
+		MEMORY_BASIC_INFORMATION mbi = { 0 };
+		if (0 == IsEffectiveAddress((LPVOID)dwEip, &mbi))
+		{
+			printf("目标地址不存在!\r\n");
+			return 0;
+		}
+		PrintInstruction(dwEip, FALSE, 8);
+	}
+	return 1;
+}
+
+//************************************
+// Method:    ParseBCommand
+// FullName:  CExceptionHandle::ParseBCommand
+// Description:断点相关命令
+// Access:    public 
+// Returns:   int
+// Qualifier:
+// Parameter: char * pszCmd
+// Date: 2018/5/9 19:53
+// Author : RuiQiYang
+//************************************
+int CExceptionHandle::ParseBCommand(char * pszCmd)
+{
+	char *CmdBuf = nullptr;
+	char *NumBuf = nullptr;
+	char * pszCmd1 = pszCmd;
+	//CmdBuf = strtok_s(pszCmd, " ", &NumBuf);
+	if (NULL == pszCmd)
+	{
+		return 0;
+	}
+	CMyDebuggerFramWork temp;
+	temp.m_ProInfo = m_ProInfo;
+	switch (pszCmd[1])
+	{
+	case 'p':
+	case 'P':
+		if (2 == GetParamCount(pszCmd1))
+		{
+			unsigned int nAddr = 0;
+			sscanf_s(pszCmd, "%s%x", stderr,100, &nAddr);
+			if (1 == temp.SetCcPoint(nAddr, FALSE)){
+				printf("添加断点成功\r\n");
+			}
+			else
+			{
+				printf("添加断点失败\r\n");
+			}
+		}
+		else
+		{
+			printf("^Error\r\n");
+		}
+		return 1;
+	case 'a':
+		if (4 == GetParamCount(pszCmd1))
+		{
+			unsigned int nAddr = 0;
+			int nLen = 0;
+			char szPurview[MAXBYTE];
+			int nPurview = 0;
+			// 这里要改，以后可能会存在overflow的问题
+			sscanf_s(pszCmd1, "%s%x%x%s", stderr,100, &nAddr, &nLen, szPurview,100);
+
+			switch (szPurview[0])
+			{
+			case 'E':
+			case 'e':
+				nPurview = 0;
+				nLen = 0;
+				break;
+			case 'r':
+			case 'R':
+				nPurview = 3;
+				break;
+			case 'w':
+			case 'W':
+				nPurview = 1;
+				break;
+			}
+			HANDLE temhThread=GetCurrentThread();
+			if (FALSE == setBreakpoint_hardRW(temhThread, nAddr, nPurview, nLen))
+			{
+				
+						printf("添加硬件断点失败!\r\n");
+				
+			}
+			else
+			{
+				printf("添加硬件断点成功!\r\n");
+			}
+		}
+		else
+		{
+			printf("参数错误\r\n,带三个参数:地址 长度 权限\r\n");
+		}
+
+		return 1;
+	}
+}
+
+//************************************
+// Method:    setBreakpoint_hardExec
+// FullName:  CExceptionHandle::setBreakpoint_hardExec
+// Description:设置硬件执行断点
+// Access:    public 
+// Returns:   bool
+// Qualifier:
+// Parameter: HANDLE hThread
+// Parameter: ULONG_PTR uAddress
+// Date: 2018/5/9 22:21
+// Author : RuiQiYang
+//************************************
+bool CExceptionHandle::setBreakpoint_hardExec(HANDLE hThread, ULONG_PTR uAddress)
+{
+	DWORD temp1 = -1;
+	CONTEXT ct = { CONTEXT_DEBUG_REGISTERS };
+	GetThreadContext(hThread, &ct);//获取线程环境块
+	DBG_REG7* pD7 = (DBG_REG7*)&ct.Dr7;
+	if (pD7->L0 == 0) {//DR0没有被使用
+		temp1 = 0;
+		ct.Dr0 = uAddress;
+		pD7->RW0 = 0;
+		pD7->LEN0 = 0;//长度域设置为0
+	}
+	else if (pD7->L1 == 0) {//DR1没有被使用
+		temp1 = 1;
+		ct.Dr1 = uAddress;
+		pD7->RW1 = 0;
+		pD7->LEN1 = 0;//长度域设置为0
+	}
+	else if (pD7->L2 == 0) {//DR2没有被使用
+		temp1 = 2;
+		ct.Dr2 = uAddress;
+		pD7->RW2 = 0;
+		pD7->LEN2 = 0;//长度域设置为0
+	}
+	else if (pD7->L3 == 0) {//DR2没有被使用
+		temp1 = 3;
+		ct.Dr3 = uAddress;
+		pD7->RW3 = 0;
+		pD7->LEN3 = 0;//长度域设置为0
+	}
+	else {
+		return FALSE;
+	}
+	DWORD temp2= uAddress;
+	BPNODE tempB;
+	tempB.dwBpOrder = temp1;
+	tempB.isActive = TRUE;
+	tempB.isResume = FALSE;
+	tempB.lpBpAddr = temp2;
+	tempB.enuBpRWE = 0;
+	tempB.dwBpLen = 1;
+	g_HardBp.push_back(tempB);
+	SetThreadContext(hThread, &ct);
+	return TRUE;
+}
+
+//************************************
+// Method:    setBreakpoint_hardRW
+// FullName:  CExceptionHandle::setBreakpoint_hardRW
+// Description:设置硬件读写断点
+// Access:    public 
+// Returns:   BOOL
+// Qualifier:
+// Parameter: HANDLE hThread
+// Parameter: ULONG_PTR uAddress
+// Parameter: BP_RWE type
+// Parameter: DWORD dwLen
+// Date: 2018/5/10 0:42
+// Author : RuiQiYang
+//************************************
+BOOL CExceptionHandle::setBreakpoint_hardRW(HANDLE hThread, ULONG_PTR uAddress, int type, DWORD dwLen)
+{
+	DWORD temp1 = -1;
+	CONTEXT ct = { 0 };
+	ct.ContextFlags = CONTEXT_DEBUG_REGISTERS| CONTEXT_FULL;
+	GetThreadContext(theThread, &ct);
+	//对地址和长度进行对齐整理（向上取整）
+	if (dwLen == 1) {//2^1字节对齐粒度
+		uAddress = uAddress - uAddress % 2;
+	}
+	else if (dwLen == 3) {//2^1字节对齐粒度
+		uAddress = uAddress - uAddress % 4;
+	}
+	else if (dwLen > 3)
+		return FALSE;
+	//判断哪些寄存器没有被使用
+	DBG_REG7* pD7 = (DBG_REG7*)&ct.Dr7;
+	if (pD7->L0 == 0) {//DR0没有被使用
+		temp1 = 0;
+		ct.Dr0 = uAddress;
+		pD7->RW0 = type;
+		pD7->LEN0 = dwLen;//长度域设置为0
+		pD7->L0 = 1;
+	}
+	else if (pD7->L1 == 0) {//DR1没有被使用
+		temp1 = 1;
+		ct.Dr1 = uAddress;
+		pD7->RW1 = type;
+		pD7->LEN1 = dwLen;//长度域设置为0
+		pD7->L1 = 1;
+	}
+	else if (pD7->L2 == 0) {//DR2没有被使用
+		temp1 = 2;
+		ct.Dr2 = uAddress;
+		pD7->RW2 = type;
+		pD7->LEN2 = dwLen;//长度域设置为0
+		pD7->L2 = 1;
+	}
+	else if (pD7->L3 == 0) {//DR2没有被使用
+		temp1 = 3;
+		ct.Dr3 = uAddress;
+		pD7->RW3 = type;
+		pD7->LEN3 = dwLen;//长度域设置为0
+		pD7->L3= 1;
+	}
+	else {
+		return FALSE;
+	}
+	DWORD temp2 = uAddress;
+	BPNODE tempB;
+	tempB.dwBpOrder = temp1;
+	tempB.isActive = TRUE;
+	tempB.isResume = FALSE;
+	tempB.lpBpAddr = temp2;
+	tempB.enuBpRWE = type;
+	tempB.dwBpLen = dwLen;
+	g_HardBp.push_back(tempB);
+	SetThreadContext(theThread, &ct);
+	return TRUE;
+}
+

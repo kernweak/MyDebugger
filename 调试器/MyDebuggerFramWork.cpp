@@ -135,7 +135,7 @@ void CMyDebuggerFramWork::StartDebug()
 		//    被调试进程的异常处理机制处理掉异常。
 		// 2. 如果异常是调试器主动制造的(下断点)，那么调试器
 		//    需要在去掉异常之后回复DBG_CONTINUE。
-		ContinueDebugEvent(m_dbgEvent.dwProcessId,
+		ContinueDebugEvent(m_dbgEvent.dwProcessId,//这是继续执行挂起线程的函数
 			m_dbgEvent.dwThreadId,
 			code);
 	}
@@ -193,17 +193,28 @@ BOOL CMyDebuggerFramWork::SetCcPoint(SIZE_T dwAddress, BOOL TempCC)
 	return TRUE;
 }
 
+//************************************
+// Method:    ResetDelCcPoint
+// FullName:  CMyDebuggerFramWork::ResetDelCcPoint
+// Description:去除CC断点
+// Access:    public 
+// Returns:   BOOL
+// Qualifier:
+// Parameter: SIZE_T dwAddress
+// Date: 2018/5/9 10:25
+// Author : RuiQiYang
+//************************************
 BOOL CMyDebuggerFramWork::ResetDelCcPoint(SIZE_T dwAddress)
 {
 	BYTE Int3 = 0xcc;
 	BYTE oldbyte;
 	DWORD oldProtect;
 	DWORD len;
-	for (int i = 0; i < m_VecCCBp.size(); i++)
+	for (int i = 0; i < g_VecCCBp.size(); i++)
 	{
-		if (m_VecCCBp[i].dwAddress == dwAddress)
+		if (g_VecCCBp[i].dwAddress == dwAddress)
 		{
-			byte code = m_VecCCBp[i].OldCode;
+			byte code = g_VecCCBp[i].OldCode;
 			VirtualProtectEx(m_ProInfo.hProcess, (LPVOID)dwAddress, 1, PAGE_READWRITE, &oldProtect);
 
 			if (!WriteProcessMemory(m_ProInfo.hProcess, (LPVOID)dwAddress, &code, 1, &len)) return FALSE;

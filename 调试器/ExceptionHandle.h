@@ -32,7 +32,16 @@ public:
 	int GetCurrentEip(DWORD dwThreadId);//获取Eip
 	BOOL GetCurrentModules(list<DLLNODE>& DllList, HANDLE hProcess, DEBUG_EVENT DebugEvent);//获取当前程序所有模块
 	BOOL ShowMod();//显示模块
+	int ParseSingleSetp();//处理单步
+	VOID PrintInstruction(int Eip,BOOL bContinue,int nItem);   // 输出指令
+	int Ucommand(char *pszCmd, BOOL bISContinue);//处理U命令
+	int ParseBCommand(char *pszCmd);//断点相关命令
+
+	bool setBreakpoint_hardExec(HANDLE hThread, ULONG_PTR uAddress);//设置硬件执行断点
+	BOOL setBreakpoint_hardRW(HANDLE hThread, ULONG_PTR uAddress, int type, DWORD dwLen);//设置硬件读写断点
+
 private:
+	BOOL m_nIsTCommand; // 之前是否是T命令
 	DEBUG_EVENT m_dbgEvent;
 	CONTEXT TheContext = { CONTEXT_ALL };
 	PROCESS_INFORMATION m_ProInfo;
@@ -40,6 +49,10 @@ private:
 	HANDLE m_hThread;
 	char opcode[100] = { };
 	DWORD	m_dwShowDataAddr = 0;//数据连续显示地址
-	list<DLLNODE>			m_DllList;//模块链表
+	list<DLLNODE> m_DllList;//模块链表
+	bool isGo=0;
+	HANDLE theThread;
+	CONTEXT Thect = { 0 };
+	DWORD  m_pDR6=0;
 };
 

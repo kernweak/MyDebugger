@@ -1,6 +1,7 @@
 #include "stdafx.h"
 #include"initSomeThing.h"
 BOOL g_isUserTf = TRUE;
+vector<BPNODE> g_HardBp = {};
 vector<CCBPINFO> g_VecCCBp = {};
 TheBeaClass::TheBeaClass()
 {

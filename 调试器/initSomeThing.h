@@ -42,6 +42,22 @@ typedef struct _BPINFO
 
 }CCBPINFO, *PCCBPINFO;
 
+
+//内存、硬件断点属性
+//内存、硬件断点节点
+typedef struct {
+	DWORD       dwBpOrder;		//断点序号
+	BOOL        isActive;       //是否有效
+	BOOL		isResume;		//是否需要恢复针对硬件断点
+	DWORD      lpBpAddr;		//断点地址
+	int		enuBpRWE;		//断点读、写、执行属性
+	DWORD       dwBpLen;		//断点长度
+								//    DWORD       dwNewProtect;   //新的内存页属性
+	DWORD		dwOldProtect;   //之前的内存页属性
+}BPNODE, *PBPNODE;
+
+extern vector<BPNODE> g_HardBp;
+
 extern vector<CCBPINFO> g_VecCCBp;
 
 class TheBeaClass
@@ -58,6 +74,6 @@ typedef struct {
 	DWORD		dwModBase;
 	DWORD		dwModSize;
 	DWORD		dwModEntry;
-	WCHAR		szModName[100];
-	WCHAR		szModPath[100];
+	WCHAR*		szModName;
+	WCHAR*		szModPath;
 }DLLNODE, *PDLLNODE;
