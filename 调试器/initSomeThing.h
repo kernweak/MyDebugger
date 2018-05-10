@@ -39,8 +39,19 @@ typedef struct _BPINFO
 	DWORD dwAddress; // 断点地址
 	BOOL bOnce;		 // 一次性断点
 	BYTE OldCode;
+	DWORD Reg;//1为eax,2为ecx
+	int count;//寄存器达到的值
 
 }CCBPINFO, *PCCBPINFO;
+
+//typedef struct _BTTPINFO
+//{
+//	DWORD dwAddress; // 断点地址
+//	BOOL bOnce;		 // 一次性断点
+//	BYTE OldCode;
+//	
+//
+//}CCBTPINFO, *PCCBPINFO;
 
 
 //内存、硬件断点属性

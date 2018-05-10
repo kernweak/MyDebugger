@@ -78,6 +78,8 @@ void CMyDebuggerFramWork::StartDebug()
 		case EXCEPTION_DEBUG_EVENT:
 			if (isSystemPoint) {
 				printf("异常事件\n");
+				MyExcept.m_hProc = m_hProc;
+				MyExcept.m_lpBaseOfImage = m_lpBaseOfImage;
 				MyExcept.getDbgEvent(m_dbgEvent);
 				code = MyExcept.OnException(m_dbgEvent);
 			}
@@ -88,6 +90,8 @@ void CMyDebuggerFramWork::StartDebug()
 			printf("\n加载基址：%08X,OEP:%08X\n",
 				m_dbgEvent.u.CreateProcessInfo.lpBaseOfImage,
 				m_dbgEvent.u.CreateProcessInfo.lpStartAddress);
+			m_hProc = m_dbgEvent.u.CreateProcessInfo.hProcess;
+			m_lpBaseOfImage = m_dbgEvent.u.CreateProcessInfo.lpBaseOfImage;
 			SetOepBreak();
 			break;
 		case CREATE_THREAD_DEBUG_EVENT:
@@ -154,7 +158,7 @@ void CMyDebuggerFramWork::StartDebug()
 //************************************
 BOOL CMyDebuggerFramWork::SetOepBreak()
 {
-	SetCcPoint((SIZE_T)m_dbgEvent.u.CreateProcessInfo.lpStartAddress, FALSE);
+	SetCcPoint((SIZE_T)m_dbgEvent.u.CreateProcessInfo.lpStartAddress, FALSE,0,-1);
 	return 0;
 }
 
@@ -170,7 +174,7 @@ BOOL CMyDebuggerFramWork::SetOepBreak()
 // Date: 2018/5/7 11:13
 // Author : RuiQiYang
 //************************************
-BOOL CMyDebuggerFramWork::SetCcPoint(SIZE_T dwAddress, BOOL TempCC)
+BOOL CMyDebuggerFramWork::SetCcPoint(SIZE_T dwAddress, BOOL TempCC, DWORD Reg, int count)
 {
 	BYTE Int3 = 0xcc;
 	BYTE oldbyte;
@@ -189,7 +193,7 @@ BOOL CMyDebuggerFramWork::SetCcPoint(SIZE_T dwAddress, BOOL TempCC)
 
 	VirtualProtectEx(m_ProInfo.hProcess, (LPVOID)dwAddress, 1, oldProtect, &oldProtect);
 
-	g_VecCCBp.push_back({ dwAddress ,TempCC,oldbyte });
+	g_VecCCBp.push_back({ dwAddress ,TempCC,oldbyte ,Reg ,count });
 	return TRUE;
 }
 
