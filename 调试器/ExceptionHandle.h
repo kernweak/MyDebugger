@@ -3,15 +3,23 @@
 #include "MyDebuggerFramWork.h"
 #define BUFFER_MAX      128
 #define MEMPAGE_LEN     4
+#include <Winternl.h>
 
 class CExceptionHandle
 {
 public:
+	typedef	struct _MemoryBreakType
+	{
+		DWORD   newType;
+		DWORD   oldType;
+		SIZE_T nLen;
+		bool bo;
+	}MemoryBreakType;
 	TheBeaClass m_BEA;
 	CExceptionHandle();
 	CExceptionHandle(DEBUG_EVENT dbgEvent);
 	virtual ~CExceptionHandle();																																																																																																																																																																
-	DWORD OnException(DEBUG_EVENT& dbgEvent);
+	DWORD OnException(DEBUG_EVENT& dbgEvent);//异常的分发
 	BOOL getDbgEvent(DEBUG_EVENT dbgEvent);
 	BOOL getProcessInfo(PROCESS_INFORMATION mProInfo);//获取进程信息
 	BOOL ResetDelAllPoint();//重置所有断点
@@ -21,7 +29,14 @@ public:
 	BOOL EditMemoryData();//修改内存信息
 	int DisplayDestProcessMemory(LPVOID pAddr,int nLen);//显示调试进程目标内存数据
 	int IsEffectiveAddress(IN LPVOID lpAddr, IN PMEMORY_BASIC_INFORMATION pMbi);//判断是否是有效地址
+
+
+
 	BOOL WaitUserInput();//等待用户输入
+
+
+
+
 	void PrintCommandHelp(char ch);//查看帮助
 	void PrintContext();//打印信息
 	void PrintStack();//查看栈信息
@@ -39,7 +54,34 @@ public:
 
 	bool setBreakpoint_hardExec(HANDLE hThread, ULONG_PTR uAddress);//设置硬件执行断点
 	BOOL setBreakpoint_hardRW(HANDLE hThread, ULONG_PTR uAddress, int type, DWORD dwLen);//设置硬件读写断点
+	BOOL setConditPoint(HANDLE hThread, ULONG_PTR uAddress, int type, DWORD dwLen);//设置条件断点断点
+	void dump(char* str);
+	//////
+	//设置内存断点
+	int AppendMemoryBreak(LPVOID nAddr, SIZE_T nLen, DWORD dwPurview);
+	//移除内存断点
+	int RemoveMemoryBreak(LPVOID nAddr);
+	//判断在不在map里
+	DWORD beinset(LPVOID  addr, DWORD dw);
+	//内存断点
+	void Setmm();
+	void huanyabread(LPVOID lpAddr);
 
+	void setAllBreakpoint(HANDLE hProc);
+	//设置除当前外的其它断点
+	void setAllBreakpointOther(HANDLE hProc);
+
+	void AADebug(HANDLE hDebugProcess);
+	
+	HANDLE m_hProc;
+	LPVOID m_lpBaseOfImage;
+	//pe
+	//加载基址对应的模块绝对路径
+	map<LPVOID, string> importTableMap;
+	PIMAGE_NT_HEADERS g_pNt = 0;
+	bool EnummyModule(DWORD dwPID);
+	void myPE(const char* str);
+	DWORD RVAtoFOA(DWORD dwRVA);
 private:
 	BOOL m_nIsTCommand; // 之前是否是T命令
 	DEBUG_EVENT m_dbgEvent;
@@ -54,5 +96,14 @@ private:
 	HANDLE theThread;
 	CONTEXT Thect = { 0 };
 	DWORD  m_pDR6=0;
+	HANDLE hProc;
+	
+	//
+	//  获取输出流的句柄
+	HANDLE hOut = GetStdHandle(STD_OUTPUT_HANDLE);
+	//内存断点保存  地址，new属性  old属性
+	map<LPVOID, MemoryBreakType> Memorymap;
+	FARPROC myfun;
+	LPVOID lpBaseOfImage;//加载基址
 };
 

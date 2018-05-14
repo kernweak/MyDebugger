@@ -33,11 +33,11 @@ DWORD CExceptionHandle::OnException(DEBUG_EVENT & dbgEvent)
 {
 	m_dbgEvent = dbgEvent;
 	GetThreadContext(m_ProInfo.hThread, &TheContext);
-
+	lpBaseOfImage = m_dbgEvent.u.CreateProcessInfo.lpBaseOfImage;
 
 	EXCEPTION_RECORD& er = m_dbgEvent.u.Exception.ExceptionRecord;
 
-	HANDLE hProc = OpenProcess(PROCESS_ALL_ACCESS,
+	hProc = OpenProcess(PROCESS_ALL_ACCESS,
 		FALSE,
 		m_dbgEvent.dwProcessId);
 
@@ -47,24 +47,56 @@ DWORD CExceptionHandle::OnException(DEBUG_EVENT & dbgEvent)
 	//异常事件就是系统断点
 	printf("\t异常代码：%08X\n", er.ExceptionCode);
 	printf("\t异常地址：%08X\n", er.ExceptionAddress);
-
+	//先找到
+	auto inter = this->Memorymap.find(er.ExceptionAddress);
 	switch (m_dbgEvent.u.Exception.ExceptionRecord.ExceptionCode)
 	{
 	case EXCEPTION_BREAKPOINT://触发断点时引发的异常。
 							  //  是否有条件断点         临时断点(F8 步过)
-		ResetDelAllPoint();;//重置所有断点
-		Print((SIZE_T)m_dbgEvent.u.Exception.ExceptionRecord.ExceptionAddress);//打印反汇编
-		TheContext.Eip--;
-		SetThreadContext(m_ProInfo.hThread, &TheContext);
-		//等待用户输入  
-		//  执行程序 三种情况F7   F5  和F8        
-		//      用户输入F7  设置TF 标志位  所有断点不需要恢复 
-		//      用户输入 F5 所有断点也不需要恢复
-		WaitUserInput();
-		break;
+	{ResetDelAllPoint();//重置所有断点
+	CONTEXT ct = { CONTEXT_CONTROL };
+	if (!GetThreadContext(theThread, &ct)) {
+		DBGPRINT("获取线程环境失败");
+	}
+	Print((SIZE_T)m_dbgEvent.u.Exception.ExceptionRecord.ExceptionAddress);//打印反汇编
+	TheContext.Eip--;
+	SetThreadContext(m_ProInfo.hThread, &TheContext);
+	//等待用户输入  
+	//  执行程序 三种情况F7   F5  和F8        
+	//      用户输入F7  设置TF 标志位  所有断点不需要恢复 
+	//      用户输入 F5 所有断点也不需要恢复
+	WaitUserInput();
+	break;
+	}
 	case EXCEPTION_ACCESS_VIOLATION://内存访问异常
+		//MessageBox(0, "内存访问异常"，0,0);
+		//MessageBox(0, TEXT("内存访问异常"),0, 0);
+		//先取消所有断点
+		//如果在保存的里面
+		//	MessageBox(0, ("内存访问异常！"), 0, 0);
+		if (inter != Memorymap.end()) {
+			MessageBox(0, (L"内存断命中！"), 0, 0);
+			huanyabread(er.ExceptionAddress);
+			//dumpasm2(this->hThread);
+			//设置内存断点
+			setAllBreakpointOther(this->hProc);
+			//等待用户输入
+			WaitUserInput();
+
+			break;
+		}
+		else {
+			huanyabread(er.ExceptionAddress);
+			setAllBreakpointOther(this->hProc);
+
+			break;
+		}
 		break;
 	case EXCEPTION_SINGLE_STEP:
+		if (er.ExceptionAddress == this->myfun) {
+
+		  MessageBox(0, _T("hook"), 0, 0);
+		}
 		ParseSingleSetp();
 		//WaitUserInput();
 		break;
@@ -542,8 +574,9 @@ BOOL CExceptionHandle::WaitUserInput()
 			isUCommand = FALSE;
 			m_nIsTCommand = TRUE;// 之前是否是T命令
 			ResetDelAllPoint();
-			PEFLAGS  eflag = (PEFLAGS)&TheContext.EFlags;
-			eflag->TF = 1;
+			TheContext.EFlags |= 0x100;
+			//PEFLAGS  eflag = (PEFLAGS)&TheContext.EFlags;
+			//eflag->TF = 1;
 			SetThreadContext(m_ProInfo.hThread, &TheContext);
 			//如果 执行单步 遇到cc 断点   
 			//如果 执行单步 遇到 内存断点
@@ -551,15 +584,112 @@ BOOL CExceptionHandle::WaitUserInput()
 			return 0;
 		}
 
+		//步过
+		if (strcmp("p", CmdBuf) == 0)//DOF7
+		{
+			LPBYTE opcode[50];
+			SIZE_T read = 0;
+			//先获取当前的eip
+			CONTEXT ct = { CONTEXT_CONTROL };
+			if (!GetThreadContext(theThread, &ct)) {
+				DBGPRINT("获取线程环境失败");
+			}
+			//1.当前指令是否为call
+			bool bol2 = ReadProcessMemory(hProc, (DWORD*)ct.Eip, opcode, sizeof(opcode), &read);
+			DISASM disAsm = { 0 };
+			disAsm.EIP = (UIntPtr)opcode;    //当前eip
+			disAsm.VirtualAddr = (UInt64)ct.Eip;   //异常地址（一般是指向下一条）
+			disAsm.Archi = 0;// x86汇编
+			int nLen = 0;
+			//反汇编出一条返回长度
+			nLen = Disasm(&disAsm);
+			string str(disAsm.CompleteInstr);
+			//查找有没有call
+			string::size_type idx = str.find("call");
+			//在下一条指令下断点
+			if (idx != string::npos) {
+				DWORD temp = ct.Eip + nLen;
+				CCBPINFO bp;
+				//bp.count = -1;
+				//bp.Reg = 0;
+				bp.bOnce = FALSE;
+				bp.dwAddress = temp;
+				DWORD lpflOldProtect;
+				DWORD lpflOldProtect2;
+				SIZE_T  lpNumberOfBytesRead;
+				BYTE nowdata = 0;
+				//先修改页属性
+				bool bo = VirtualProtectEx(hProc, (LPVOID)temp, 1000, 0x40, &lpflOldProtect);
+				if (!ReadProcessMemory(hProc, (LPVOID)temp, &nowdata, 1, &lpNumberOfBytesRead)) {
+					DBGPRINT("读取进程内存失败");
+					//先设置回去
+					bool bo2 = VirtualProtectEx(hProc, (LPVOID)temp, 1000, lpflOldProtect, &lpflOldProtect2);
+					return false;
+				}
+				bp.OldCode = nowdata;
+				//设置oep断点
+				//SetCcPoint(hProc, (DWORD*)temp, &bp);
+				temFramWork.SetCcPoint(temp, false);
+				//保存起来
+				g_VecCCBp.push_back(bp);
+			}
+			//下单步
+			else {
+				DWORD dwEip = 0;
+				dwEip = GetCurrentEip(m_dbgEvent.dwThreadId);
+				PrintInstruction(dwEip, 0, 1);
+
+
+				isUCommand = FALSE;
+				m_nIsTCommand = TRUE;// 之前是否是T命令
+				ResetDelAllPoint();
+				PEFLAGS  eflag = (PEFLAGS)&TheContext.EFlags;
+				eflag->TF = 1;
+				SetThreadContext(m_ProInfo.hThread, &TheContext);
+			}
+
+			//直接返回
+			return 0;
+		}
+
+
 		//设置断点
 		if ('b' == CmdBuf[0]) { // 处理B命令的命令，比如bp, ba, bd
 			isUCommand = FALSE;
 			ParseBCommand(buffer1);
 		}
-	//	if (strcmp("b", CmdBuf) == 0) {
-	//			 // 处理B命令的命令，比如bp, ba, bd
-	//			
-	//	}
+		
+	if (strcmp("pe", CmdBuf) == 0) {
+
+				 // 处理B命令的命令，比如bp, ba, bd
+		static bool bo = true;
+		if (bo) {
+			//遍历所有模块保存起来
+			EnummyModule(GetProcessId(this->hProc));
+			bo = false;
+		}
+		LPVOID temp;
+
+		cout << "请输入要查看的模块的基址：";
+		scanf_s("%x", &temp);
+		auto inter = this->importTableMap.find(temp);
+		if (inter != importTableMap.end()) {
+			string str = importTableMap[temp];
+			const char* ch = str.c_str();
+			this->myPE(ch);
+		}
+		//this->userInput(this->hProc, this->hThread);
+		WaitUserInput();
+		break;
+		}
+	//dump
+		if (strcmp("dump", CmdBuf) == 0) { // dump
+			isUCommand = FALSE;
+			char str[MAX_PATH];
+			cout << "路径：";
+			gets_s(str, MAX_PATH);
+			dump(str);
+		}
 
 		if (strcmp("g", CmdBuf) == 0)
 		{
@@ -613,6 +743,32 @@ BOOL CExceptionHandle::WaitUserInput()
 		{
 			Editasm(addr);
 		}
+		if (strcmp("peb", CmdBuf) == 0)//peb
+		{
+			AADebug(hProc);
+		}
+
+		if (strcmp("hook", CmdBuf) == 0)//hook
+		{
+			//hook函数名
+			cout << "要hook的函数名：";
+			string str;
+			cin >> str;
+			const char* ch = str.c_str();
+			HINSTANCE hDLL;
+			hDLL = LoadLibrary(L"kernel32.dll");
+			//test
+			 myfun = (FARPROC)GetProcAddress(hDLL, "OpenProcessToken");
+			//FARPROC myfun = (FARPROC)GetProcAddress(hDLL, ch);
+			//下个硬件断点
+			//SetDrBreakPoint(4, (unsigned int)myfun, 0, 0);
+		   setBreakpoint_hardRW(theThread,(ULONG_PTR)myfun,0,0);
+			WaitUserInput();
+			break;
+
+		}
+
+
 		if (strcmp("e", CmdBuf) == 0)//修改内存
 		{
 			EditMemoryData();
@@ -665,13 +821,8 @@ void CExceptionHandle::PrintCommandHelp(char ch)
 	{
 		printf("ba (添加一个硬件断点)            断点地址 长度 权限\r\n");
 		printf("bp (int3断点)                    断点地址\r\n");
-		printf("bl (显示所有断点信息)\r\n");
-		printf("bc (清除所有int3和硬件断点信息)\r\n");
-		printf("be (激活一个断点)                断点地址\r\n");
-		printf("bd (禁用一个断点)                断点地址\r\n");
-		printf("br (移除一个int3断点或硬件断点)  断点地址\r\n");
+		printf("bt (添加一个条件断点)            断点地址 寄存器 值\r\n");
 		printf("bm (添加一个内存断点)            断点地址 长度 权限\r\n");
-		printf("by (移除一个内存断点)            断点地址\r\n");
 	}
 
 	if (0 == ch)
@@ -684,17 +835,10 @@ void CExceptionHandle::PrintCommandHelp(char ch)
 		printf("? 或  h                          查看帮助\r\n");
 		printf("g [目标地址]                     执行到目标地址处\r\n");
 		printf("stack                            查看栈信息\r\n");
-		printf("\t如果后面指定地址，中间的断点将全部失效\r\n");
-		printf("l                                显示PE信息\r\n");
+		printf("PEB                              隐藏PEB\r\n");
+		printf("HOOK                             HOOK\r\n");
 		printf("d [目标起始地址] [目标终址地址]/[长度] 查看内存\r\n");
 		printf("e                                修改内存\r\n");
-		printf("q                                退出\r\n");
-		printf("s 记录范围起始地址 记录范围终止地址 [保存文件名]\r\n");
-		printf("o [脚本路径名]                   运行脚本\r\n");
-
-		printf("扩展命令:\r\n");
-		printf(".kill                            结束被调试进程\r\n");
-		printf(".restart                         重新加载被调试进程(测试)\r\n");
 		printf(".show                            显示已加载模块\r\n");
 	}
 	printf("\r\n");
@@ -1708,24 +1852,7 @@ int CExceptionHandle::ParseBCommand(char * pszCmd)
 			// 这里要改，以后可能会存在overflow的问题
 			sscanf_s(pszCmd1, "%s%x%x%s", stderr,100, &nAddr, &nLen, szPurview,100);
 
-			switch (szPurview[0])
-			{
-			case 'E':
-			case 'e':
-				nPurview = 0;
-				nLen = 0;
-				break;
-			case 'r':
-			case 'R':
-				nPurview = 3;
-				break;
-			case 'w':
-			case 'W':
-				nPurview = 1;
-				break;
-			}
-			HANDLE temhThread=GetCurrentThread();
-			if (FALSE == setBreakpoint_hardRW(temhThread, nAddr, nPurview, nLen))
+			if (FALSE == setBreakpoint_hardRW(theThread, nAddr, nPurview, nLen))
 			{
 				
 						printf("添加硬件断点失败!\r\n");
@@ -1739,6 +1866,42 @@ int CExceptionHandle::ParseBCommand(char * pszCmd)
 		else
 		{
 			printf("参数错误\r\n,带三个参数:地址 长度 权限\r\n");
+		}
+
+
+		return 1;
+
+		//设置内存断点
+	case 'm':
+		Setmm();
+		return 1;
+		//设置条件断点
+
+
+	case 't':
+		if (4 == GetParamCount(pszCmd1))
+		{
+			unsigned int nAddr = 0;
+			int nLen = 0;
+			char szPurview[MAXBYTE];
+			int nPurview = 0;
+			sscanf_s(pszCmd1, "%s%x%x%d", stderr, 100, &nAddr, &nPurview, &nLen);
+
+			
+			if (FALSE==setConditPoint( theThread, nAddr, nPurview, nLen))
+			{
+
+				printf("添加条件断点失败!\r\n");
+
+			}
+			else
+			{
+				printf("添加条件断点成功!\r\n");
+			}
+		}
+		else
+		{
+			printf("参数错误\r\n,带三个参数: 断点地址 寄存器 值\r\n");
 		}
 
 		return 1;
@@ -1878,3 +2041,731 @@ BOOL CExceptionHandle::setBreakpoint_hardRW(HANDLE hThread, ULONG_PTR uAddress, 
 	return TRUE;
 }
 
+//************************************
+// Method:    setConditPoint
+// FullName:  CExceptionHandle::setConditPoint
+// Description:设置条件断点断点
+// Access:    public 
+// Returns:   BOOL
+// Qualifier:
+// Parameter: HANDLE hThread
+// Parameter: ULONG_PTR uAddress
+// Parameter: int type
+// Parameter: DWORD dwLen
+// Date: 2018/5/10 16:29
+// Author : RuiQiYang
+//************************************
+BOOL CExceptionHandle::setConditPoint(HANDLE hThread, ULONG_PTR uAddress, int type, DWORD dwLen)
+{
+	BYTE Int3 = 0xcc;
+	BYTE oldbyte;
+	DWORD oldProtect;
+	DWORD len;
+	VirtualProtectEx(m_ProInfo.hProcess, (LPVOID)uAddress, 1, PAGE_READWRITE, &oldProtect);//改变在内核的保护属性。
+
+	if (!ReadProcessMemory(m_ProInfo.hProcess, (LPVOID)uAddress, &oldbyte, 1, &len)) {//读取内存信息，将原有数据写入oldbyte
+		DBGPRINT("读取进程内存失败");
+		return FALSE;
+	}
+	if (!WriteProcessMemory(m_ProInfo.hProcess, (LPVOID)uAddress, &Int3, 1, &len)) {//写入内存信息，将原有位置写入0xCc
+		DBGPRINT("写入进程内存失败");
+		return false;
+	}
+
+	VirtualProtectEx(m_ProInfo.hProcess, (LPVOID)uAddress, 1, oldProtect, &oldProtect);
+
+	//g_VecCONBp.push_back({ uAddress ,FALSE,oldbyte ,type ,dwLen });
+	return TRUE;
+}
+
+int CExceptionHandle::AppendMemoryBreak(LPVOID nAddr, SIZE_T nLen, DWORD dwPurview)
+{
+	//检查进程句柄
+	if (NULL == hProc)
+	{
+		return 0;
+	}
+	// 检查参数
+	if (NULL == nAddr)
+	{
+		return 0;
+	}
+	//检查内存断点是否已经设置了
+	//if (dwPurview==beinset(nAddr, dwPurview))
+	//{
+	//	printf("已经存在\n");
+	//	return 0;
+	//}
+
+	/*
+	#define PAGE_NOACCESS          0x01
+	#define PAGE_READONLY          0x02
+	#define PAGE_READWRITE         0x04
+	*/
+	//if (dwPurview < 1 || dwPurview > 4)
+	//{
+	//	return 0;
+	//}
+	MEMORY_BASIC_INFORMATION mbi = { 0 };
+	SIZE_T size = 100;
+	//先获取属性
+	VirtualQueryEx(this->hProc, nAddr, &mbi, sizeof(mbi));
+	if (mbi.Type == dwPurview) {
+		printf("本来就是那个属性！！！");
+		return 0;
+	}
+	/*VirtualProtectEx(
+	_In_ HANDLE hProcess,
+	_In_ LPVOID lpAddress,
+	_In_ SIZE_T dwSize,
+	_In_ DWORD flNewProtect,
+	_Out_ PDWORD lpflOldProtect
+	);*/
+	DWORD lpflOldProtect;
+	//设置属性
+	if (!VirtualProtectEx(this->hProc, nAddr, nLen, dwPurview, &lpflOldProtect)) {
+		printf("设置失败！！！\n");
+		return 0;
+	}
+	DWORD dw;//属性
+	MemoryBreakType temptype{ dwPurview, lpflOldProtect ,nLen ,true };  //new  old
+	this->Memorymap.insert(pair <LPVOID, MemoryBreakType>(nAddr, temptype));
+	printf("设置成功！！！\n");
+	return 1;
+}
+
+int CExceptionHandle::RemoveMemoryBreak(LPVOID nAddr)
+{
+	//先找到
+	auto inter = this->Memorymap.find(nAddr);
+	if (inter != Memorymap.end()) {  //如果找到了
+		MessageBox(0, L"内存断点触发！", 0, 0);
+		MemoryBreakType temptype = Memorymap[nAddr];
+		DWORD tempdw = temptype.oldType;
+		DWORD lpflOldProtect;
+		//设置属性
+		if (VirtualProtectEx(this->hProc, nAddr, temptype.nLen, tempdw, &lpflOldProtect)) {
+			printf("设置失败！！！\n");
+			return 0;
+		}
+		//迭代器刪除
+		Memorymap.erase(inter);
+		printf("设置成功！！！\n");
+		return 1;
+	}
+	printf("库里没有，不是自己设置的！！！\n");
+	return 0;
+}
+
+DWORD CExceptionHandle::beinset(LPVOID addr, DWORD dw)
+{
+	if (dw > 0x11 && dw < 0x00) {
+		printf("错误:%x", dw);
+		return 0x12;
+	}
+	//先找到
+	auto inter = this->Memorymap.find(addr);
+	if (inter != Memorymap.end()) {  //如果找到了
+		MemoryBreakType temptype = Memorymap[addr];
+		if (temptype.newType == dw) { //如果相等
+			return 0x10;
+		}
+		else {
+			switch (temptype.newType)
+			{
+				//#define PAGE_NOACCESS          0x01     
+				//#define PAGE_READONLY          0x02     
+				//#define PAGE_READWRITE         0x04     
+				//#define PAGE_WRITECOPY         0x08  
+			case 0x01:
+			{
+				return 0x01;
+			}
+			case 0x02:
+			{
+				return 0x02;
+			}
+			case 0x04:
+			{
+				return 0x04;
+			}
+			case 0x08:
+			{
+				return 0x08;
+			}
+			default:
+				return 0x00;
+			}
+		}
+	}
+	return 0x00;
+}
+//设置内存断点
+void CExceptionHandle::Setmm()
+{
+	////设置内存断点
+	//int AppendMemoryBreak(LPVOID nAddr, SIZE_T nLen, DWORD dwPurview);
+	////移除内存断点
+	//int RemoveMemoryBreak(LPVOID nAddr);
+	printf("起始地址：");
+	LPVOID nAddr = 0;
+	//初始地址
+	scanf_s("%x", &nAddr);
+	getchar();
+	//#define PAGE_NOACCESS          0x01
+	//#define PAGE_READONLY          0x02
+	//#define PAGE_READWRITE         0x04
+	DWORD dw;
+
+	printf("权限保护：  0x01禁止所有 0x02 只读 \n");
+	printf("什么权限的断点：");
+	scanf_s("%x", &dw);
+	getchar();
+	int len;
+	printf("长度：");
+	scanf_s("%d", &len);
+	AppendMemoryBreak((LPVOID)nAddr, len, dw);
+}
+
+void CExceptionHandle::huanyabread(LPVOID lpAddr)
+{
+	DWORD lpflOldProtect;
+	//先设置可以执行先让他过
+
+	
+	//写死了
+	VirtualProtectEx(this->hProc, lpAddr, 100, 0x20, &lpflOldProtect);
+	//必须得还原eip
+	CONTEXT ct = { CONTEXT_CONTROL };
+	if (!GetThreadContext(theThread, &ct)) {
+		DBGPRINT("获取线程上下文失败");
+		return;
+	}
+	++ct.Eip;
+	if (!SetThreadContext(theThread, &ct)) {
+		DBGPRINT("设置线程上下文失败");
+		return;
+	}
+}
+//设置所有断点
+void CExceptionHandle::setAllBreakpoint(HANDLE hProc)
+{
+	////软件 
+	//for (auto&i : g_bps) {
+	//	if (i.dwType == EXCEPTION_BREAKPOINT) {
+	//		setBreakpoint_cc(hProc, i.address, &i);
+	//	}
+	//	else if (i.dwType == EXCEPTION_SINGLE_STEP) {
+	//		//setBreakpoint_hard();
+	//	}
+	//}
+	map<LPVOID, MemoryBreakType>::iterator it;
+
+	it = Memorymap.begin();
+	//内存
+	while (it != Memorymap.end())
+	{
+		//it->first;
+		//it->second;
+		AppendMemoryBreak(it->first, 1, it->second.newType);
+		it++;
+	}
+}
+
+//设置除了当前外的所有断点
+void CExceptionHandle::setAllBreakpointOther(HANDLE hProc)
+{
+	EXCEPTION_RECORD& er = m_dbgEvent.u.Exception.ExceptionRecord;
+
+	map<LPVOID, MemoryBreakType>::iterator it;
+
+	it = Memorymap.begin();
+	//内存
+	while (it != Memorymap.end())
+	{
+		//it->first;
+		//it->second;
+		//断点是否为当前eip
+		if (er.ExceptionAddress != it->first) {
+			AppendMemoryBreak(it->first, 1, it->second.newType);
+		}
+		it++;
+	}
+	//硬件
+//	//硬件
+//	for (auto temp : DrVector) {
+//		if (er.ExceptionAddress != temp.address) {
+//			this->SetDrBreakPoint(temp.dr, (unsigned int)temp.address, temp.nLen, temp.nPurview);
+//		}
+//	}
+}
+
+void CExceptionHandle::AADebug(HANDLE hDebugProcess)
+{
+
+	typedef NTSTATUS(WINAPI*pfnNtQueryInformationProcess)
+		(HANDLE ProcessHandle, ULONG ProcessInformationClass,
+			PVOID ProcessInformation, UINT32 ProcessInformationLength,
+			UINT32* ReturnLength);
+
+	typedef struct _MY_PEB {               // Size: 0x1D8
+		UCHAR           InheritedAddressSpace;
+		UCHAR           ReadImageFileExecOptions;
+		UCHAR           BeingDebugged;              //Debug运行标志
+		UCHAR           SpareBool;
+		HANDLE          Mutant;
+		HINSTANCE       ImageBaseAddress;           //程序加载的基地址
+		struct _PEB_LDR_DATA    *Ldr;                //Ptr32 _PEB_LDR_DATA
+		struct _RTL_USER_PROCESS_PARAMETERS  *ProcessParameters;
+		ULONG           SubSystemData;
+		HANDLE         ProcessHeap;
+		KSPIN_LOCK      FastPebLock;
+		ULONG           FastPebLockRoutine;
+		ULONG           FastPebUnlockRoutine;
+		ULONG           EnvironmentUpdateCount;
+		ULONG           KernelCallbackTable;
+		LARGE_INTEGER   SystemReserved;
+		struct _PEB_FREE_BLOCK  *FreeList;
+		ULONG           TlsExpansionCounter;
+		ULONG           TlsBitmap;
+		LARGE_INTEGER   TlsBitmapBits;
+		ULONG           ReadOnlySharedMemoryBase;
+		ULONG           ReadOnlySharedMemoryHeap;
+		ULONG           ReadOnlyStaticServerData;
+		ULONG           AnsiCodePageData;
+		ULONG           OemCodePageData;
+		ULONG           UnicodeCaseTableData;
+		ULONG           NumberOfProcessors;
+		LARGE_INTEGER   NtGlobalFlag;               // Address of a local copy
+		LARGE_INTEGER   CriticalSectionTimeout;
+		ULONG           HeapSegmentReserve;
+		ULONG           HeapSegmentCommit;
+		ULONG           HeapDeCommitTotalFreeThreshold;
+		ULONG           HeapDeCommitFreeBlockThreshold;
+		ULONG           NumberOfHeaps;
+		ULONG           MaximumNumberOfHeaps;
+		ULONG           ProcessHeaps;
+		ULONG           GdiSharedHandleTable;
+		ULONG           ProcessStarterHelper;
+		ULONG           GdiDCAttributeList;
+		KSPIN_LOCK      LoaderLock;
+		ULONG           OSMajorVersion;
+		ULONG           OSMinorVersion;
+		USHORT          OSBuildNumber;
+		USHORT          OSCSDVersion;
+		ULONG           OSPlatformId;
+		ULONG           ImageSubsystem;
+		ULONG           ImageSubsystemMajorVersion;
+		ULONG           ImageSubsystemMinorVersion;
+		ULONG           ImageProcessAffinityMask;
+		ULONG           GdiHandleBuffer[0x22];
+		ULONG           PostProcessInitRoutine;
+		ULONG           TlsExpansionBitmap;
+		UCHAR           TlsExpansionBitmapBits[0x80];
+		ULONG           SessionId;
+	} MY_PEB, *PMY_PEB;
+
+
+	HMODULE NtdllModule = GetModuleHandle(L"ntdll.dll");
+	pfnNtQueryInformationProcess NtQueryInformationProcess =
+		(pfnNtQueryInformationProcess)GetProcAddress(NtdllModule, "NtQueryInformationProcess");
+	PROCESS_BASIC_INFORMATION  pbi = { 0 };
+	UINT32  ReturnLength = 0;
+	NTSTATUS Status = NtQueryInformationProcess(hDebugProcess,
+		ProcessBasicInformation, &pbi, (UINT32)sizeof(pbi), (UINT32*)&ReturnLength);
+	if (NT_SUCCESS(Status))
+	{
+		MY_PEB* Peb = (MY_PEB*)malloc(sizeof(MY_PEB));
+		ReadProcessMemory(hDebugProcess, (PVOID)pbi.PebBaseAddress, Peb, sizeof(MY_PEB), NULL);
+
+		Peb->BeingDebugged = 0;
+		Peb->NtGlobalFlag.u.HighPart = 0;
+
+		WriteProcessMemory(hDebugProcess, (PVOID)pbi.PebBaseAddress, Peb, sizeof(MY_PEB), NULL);
+
+	}
+}
+
+
+void CExceptionHandle::dump(char* str)
+{
+	//dump前还原所有断点
+	ResetDelAllPoint();
+
+	HANDLE hFile = CreateFileA(str, GENERIC_WRITE | GENERIC_READ, FILE_SHARE_READ, NULL, CREATE_NEW, FILE_ATTRIBUTE_NORMAL, NULL);
+
+	if (hFile == INVALID_HANDLE_VALUE)
+	{
+		printf("创建文件失败,\n");
+		if (GetLastError() == 0x00000050) {
+			cout << "文件已存在！！！" << endl;
+		}
+		return;
+	}
+	IMAGE_DOS_HEADER dos;//dos头
+
+	IMAGE_NT_HEADERS nt;
+	//读dos头
+	if (ReadProcessMemory(m_hProc, m_lpBaseOfImage, &dos, sizeof(IMAGE_DOS_HEADER), NULL) == FALSE)
+		return;
+
+
+	//读nt头
+	if (ReadProcessMemory(m_hProc, (BYTE *)m_lpBaseOfImage + dos.e_lfanew, &nt, sizeof(IMAGE_NT_HEADERS32), NULL) == FALSE)
+	{
+		return;
+	}
+
+
+	//读取节区并计算节区大小
+	DWORD secNum = nt.FileHeader.NumberOfSections;
+	PIMAGE_SECTION_HEADER Sections = new IMAGE_SECTION_HEADER[secNum];
+	//读取节区
+	if (ReadProcessMemory(m_hProc,
+		(BYTE *)m_lpBaseOfImage + dos.e_lfanew + sizeof(IMAGE_NT_HEADERS),
+		Sections,
+		secNum * sizeof(IMAGE_SECTION_HEADER),
+		NULL) == FALSE)
+	{
+		return;
+	}
+
+	//计算所有节区的大小
+	DWORD allsecSize = 0;
+	DWORD maxSec;//最大的节区
+
+	maxSec = 0;
+
+	for (int i = 0; i < secNum; ++i)
+	{
+		allsecSize += Sections[i].SizeOfRawData;
+
+	}
+
+	//dos
+	//nt
+	//节区总大小
+	DWORD topsize = secNum * sizeof(IMAGE_SECTION_HEADER) + sizeof(IMAGE_NT_HEADERS) + dos.e_lfanew;
+
+	//使头大小按照文件对齐
+	if ((topsize&nt.OptionalHeader.FileAlignment) != topsize)
+	{
+		topsize &= nt.OptionalHeader.FileAlignment;
+		topsize += nt.OptionalHeader.FileAlignment;
+	}
+
+	DWORD ftsize = topsize + allsecSize;
+	//创建文件映射
+	HANDLE hMap = CreateFileMapping(hFile,
+		NULL, PAGE_READWRITE,
+		0,
+		ftsize,
+		0);
+
+	if (hMap == NULL)
+	{
+		printf("创建文件映射失败\n");
+		return;
+	}
+
+	//创建视图
+	LPVOID lpmem = MapViewOfFile(hMap, FILE_MAP_READ | FILE_MAP_WRITE, 0, 0, 0);
+
+	if (lpmem == NULL)
+	{
+		delete[] Sections;
+		CloseHandle(hMap);
+		printf("创建视图失败\n");
+		return;
+	}
+	PBYTE bpMem = (PBYTE)lpmem;
+	memcpy(lpmem, &dos, sizeof(IMAGE_DOS_HEADER));
+	//计算dossub 大小
+
+	DWORD subSize = dos.e_lfanew - sizeof(IMAGE_DOS_HEADER);
+
+	if (ReadProcessMemory(m_hProc, (BYTE *)m_lpBaseOfImage + sizeof(IMAGE_DOS_HEADER), bpMem + sizeof(IMAGE_DOS_HEADER), subSize, NULL) == FALSE)
+	{
+		delete[] Sections;
+		CloseHandle(hMap);
+		UnmapViewOfFile(lpmem);
+		return;
+	}
+
+	nt.OptionalHeader.ImageBase = (DWORD)lpBaseOfImage;
+	//保存NT头
+	memcpy(bpMem + dos.e_lfanew, &nt, sizeof(IMAGE_NT_HEADERS));
+
+	//保存节区
+	memcpy(bpMem + dos.e_lfanew + sizeof(IMAGE_NT_HEADERS), Sections, secNum * sizeof(IMAGE_SECTION_HEADER));
+
+	for (int i = 0; i < secNum; ++i)
+	{
+		if (ReadProcessMemory(
+			m_hProc, (BYTE *)m_lpBaseOfImage + Sections[i].VirtualAddress,
+			bpMem + Sections[i].PointerToRawData,
+			Sections[i].SizeOfRawData,
+			NULL) == FALSE)
+		{
+			delete[] Sections;
+			CloseHandle(hMap);
+			UnmapViewOfFile(lpmem);
+			return;
+		}
+	}
+	if (FlushViewOfFile(lpmem, 0) == false)
+	{
+		delete[] Sections;
+		CloseHandle(hMap);
+		UnmapViewOfFile(lpmem);
+		printf("保存到文件失败\n");
+		return;
+	}
+	delete[] Sections;
+	CloseHandle(hMap);
+	UnmapViewOfFile(lpmem);
+	MessageBox(0, L"ok", 0, 0);
+	return;
+}
+bool CExceptionHandle::EnummyModule(DWORD dwPID) {
+	// 1. 先创建快照
+	HANDLE hTool32 = CreateToolhelp32Snapshot(TH32CS_SNAPMODULE, dwPID);
+
+	// 2. 开始遍历进程
+	MODULEENTRY32W mi = { sizeof(MODULEENTRY32W) };
+	BOOL bRet = Module32First(hTool32, (LPMODULEENTRY32)&mi);
+	if (!bRet)
+	{
+		printf("Module32First error!\n");
+		return false;
+	}
+	int i = 0;
+	do
+	{
+		char ch[1000] = { 0 };
+		sprintf_s(ch, "%S", mi.szExePath,100);
+		string str(ch);
+		//插入模块
+		this->importTableMap.insert(make_pair(mi.modBaseAddr, str));
+	} while (Module32NextW(hTool32, &mi));
+	return true;
+}
+//解析pe
+void CExceptionHandle::myPE(const char* str)
+{
+	string st = str;
+	DWORD dwFileSize;
+	BYTE* g_pFileImageBase = 0;
+	//PIMAGE_NT_HEADERS g_pNt = 0;
+
+	DWORD RVAtoFOA(DWORD dwRVA);
+	OPENFILENAME stOF;
+	HANDLE hFile, hMapFile;
+	DWORD totalSize;        //文件大小
+	LPVOID lpMemory;        //内存映像文件在内存的起始位置
+	char szFileName[MAX_PATH] = { 0 };  //要打开的文件路径及名称名
+	char bufTemp1[10];                  //每个字符的十六进制字节码
+	char bufTemp2[20];                  //第一列
+	char lpServicesBuffer[100];     //一行的所有内容
+	char bufDisplay[50];                //第三列ASCII码字符
+	DWORD dwCount;                      //计数，逢16则重新计
+	DWORD dwCount1;                     //地址顺号
+	DWORD dwBlanks;                     //最后一行空格数
+	hFile = CreateFileA(str, GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE,
+		NULL, OPEN_EXISTING, FILE_ATTRIBUTE_ARCHIVE, NULL);
+	//如果是无效的句柄
+	if (hFile == INVALID_HANDLE_VALUE) {
+		
+		printf("打开模块失败\n");
+		return;
+	}
+	//获取文件大小
+	dwFileSize = GetFileSize(hFile, NULL);
+	g_pFileImageBase = new BYTE[dwFileSize]{};
+	DWORD dwRead;
+	//将文件读取到内存中
+	bool bRet = ReadFile(hFile, g_pFileImageBase, dwFileSize, &dwRead, NULL);
+	//如果读取失败就返回
+	if (!bRet)
+	{
+		delete[] g_pFileImageBase;
+	}
+	//关闭句柄
+	CloseHandle(hFile);
+
+	//使用PIMAGE_DOS_HEADER（占64字节）解释前64个字节
+	PIMAGE_DOS_HEADER pDos = (PIMAGE_DOS_HEADER)g_pFileImageBase;
+	//判断PE文件的标识是否正确，有一个不对，那么它就不是PE文件
+	if (pDos->e_magic != IMAGE_DOS_SIGNATURE)//0x5A4D('MZ')
+	{
+		return;
+	}
+
+
+	g_pNt = (PIMAGE_NT_HEADERS)(pDos->e_lfanew + g_pFileImageBase);
+	if (g_pNt->Signature != IMAGE_NT_SIGNATURE)//0x00004550('PE')
+	{
+		return;
+	}
+	(g_pNt->FileHeader);
+
+	PIMAGE_OPTIONAL_HEADER32 myoption = &(g_pNt->OptionalHeader);
+
+	int nCountOfSection = g_pNt->FileHeader.NumberOfSections;
+	//取第一个区表头
+	PIMAGE_SECTION_HEADER pSec = IMAGE_FIRST_SECTION(g_pNt);
+
+	//	
+	DWORD dwExportRVA = g_pNt->OptionalHeader.DataDirectory[0].VirtualAddress;
+	//	//获取在文件中的位置
+	PIMAGE_EXPORT_DIRECTORY pExport = (PIMAGE_EXPORT_DIRECTORY)(this->RVAtoFOA(dwExportRVA) + g_pFileImageBase);
+	//	//模块名字
+	char* pName = (char*)(this->RVAtoFOA(pExport->Name) + g_pFileImageBase);
+	printf("%s\n", pName);
+	//地址表中的个数
+	DWORD dwCountOfFuntions = pExport->NumberOfFunctions;
+	//名称表中的个数
+	DWORD dwCountOfNames = pExport->NumberOfNames;
+	//地址表地址
+	PDWORD pAddrOfFuntion = (PDWORD)(this->RVAtoFOA(pExport->AddressOfFunctions) + g_pFileImageBase);
+	//名称表地址
+	PDWORD pAddrOfName = (PDWORD)(this->RVAtoFOA(pExport->AddressOfNames) + g_pFileImageBase);
+	//序号表地址
+	PWORD pAddrOfOrdial = (PWORD)(this->RVAtoFOA(pExport->AddressOfNameOrdinals) + g_pFileImageBase);
+	//	//base值
+	DWORD dwBase = pExport->Base;
+	//	//遍历地址表中的元素
+	//	cout << "-----------------------------------------导出表中的导出函数与导出序号-------------------------------------------------- " << endl;
+	cout << "导出表中的导出函数与导出序号" << endl;
+	if (dwExportRVA == 0) {
+
+		printf("没有导出表\n");
+
+		//return;
+	}
+	else {
+		for (int i = 0; i < dwCountOfFuntions;i++)
+		{
+			//地址表中可能存在无用的值（就是为0的值）
+			if (pAddrOfFuntion[i] == 0)
+			{
+				continue;
+			}
+			//根据序号表中是否有值（地址表的下标值），
+			//来判断是否是名称导出
+			bool bRet = false;
+			for (int j = 0; j < dwCountOfNames;j++)
+			{
+				//i为地址表下标j为序号表的下标（值为地址表下标）
+				//判断是否在序号表中
+				if (i == pAddrOfOrdial[j])
+				{
+					//因为序号表与名称表的位置一一对应
+					//取出名称表中的名称地址RVA
+					DWORD dwNameRVA = pAddrOfName[j];
+					char* pFunName = (char*)(this->RVAtoFOA(dwNameRVA) + g_pFileImageBase);
+					printf("%04d  ", i + dwBase);
+					printf("%s  ", pFunName);
+
+					printf("0x%08x\n", pAddrOfFuntion[i]);
+					bRet = true;
+					break;
+				}
+			}
+			if (!bRet)
+			{
+				//序号表中没有，说明是以序号导出的
+				printf("%04d          ", i + dwBase);
+				//序号表中没有，说明是以序号导出的
+				printf("%08X\n", pAddrOfFuntion[i]);
+			}
+
+		}
+	}
+	//	
+	//	cout << "-----------------------------------------导入表中的导入函数与导入模块-------------------------------------------------- " << endl;
+
+	//找到导入表  也就是第二个下标为1
+	DWORD dwImpotRVA = g_pNt->OptionalHeader.DataDirectory[1].VirtualAddress;
+	//在文件中的位置
+	DWORD dwImportInFile = (DWORD)(this->RVAtoFOA(dwImpotRVA) + g_pFileImageBase);
+	PIMAGE_IMPORT_DESCRIPTOR pImport = (PIMAGE_IMPORT_DESCRIPTOR)dwImportInFile;
+	//遍历每一个导入表  通过最后一个为0作为判断条件
+	if (dwImpotRVA == 0) {
+		printf("没有导入表\n");
+
+		return;
+	}
+	else {
+		while (pImport->Name)
+		{
+			//函数名称地址
+			PIMAGE_THUNK_DATA pFirsThunk =
+				(PIMAGE_THUNK_DATA)(this->RVAtoFOA(pImport->FirstThunk) + g_pFileImageBase);
+			//模块名
+			char* pName = (char*)(this->RVAtoFOA(pImport->Name) + g_pFileImageBase);
+
+			printf("导入模块名字%s\n", pName);
+			//也是通过最后一个为0作为判断条件
+			while (pFirsThunk->u1.AddressOfData)
+			{
+				//判断导入方式
+				if (IMAGE_SNAP_BY_ORDINAL32(pFirsThunk->u1.AddressOfData))
+				{
+					//说明是序号导入(低16位是其序号)
+					printf("\t\t%04X \n", pFirsThunk->u1.Ordinal & 0xFFFF);
+				}
+				else
+				{
+					//名称导入
+					PIMAGE_IMPORT_BY_NAME pImportName =
+						(PIMAGE_IMPORT_BY_NAME)(this->RVAtoFOA(pFirsThunk->u1.AddressOfData) + g_pFileImageBase);
+
+					printf("\t\t%04X", pImportName->Hint);
+
+					printf("%s \n", pImportName->Name);
+				}
+				//
+				pFirsThunk++;
+			}
+			pImport++;
+		}
+	}
+	return;
+}
+//void _openFile();
+DWORD CExceptionHandle::RVAtoFOA(DWORD dwRVA)
+{
+	//此RVA落在哪个区段中
+	//找到所在区段后，
+	//减去所在区段的起始位置，加上在文件中的起始位置
+	//大文件头中找区段数
+	int nCountOfSection = g_pNt->FileHeader.NumberOfSections;
+	//区段表头
+	PIMAGE_SECTION_HEADER pSec = IMAGE_FIRST_SECTION(g_pNt);
+	//在扩展头中找到块对齐数
+	DWORD dwSecAligment = g_pNt->OptionalHeader.SectionAlignment;
+	//循环
+	for (int i = 0; i < nCountOfSection; i++)
+	{
+		//求在内存中的真实大小
+		//Misc.VirtualSize % dwSecAligment如果是0代表刚好对齐否则就先对齐（非0就是真）
+		//Misc.VirtualSize / dwSecAligment * dwSecAligment   + dwSecAligment     //最后加上余数的对齐
+		DWORD dwRealVirSize = pSec->Misc.VirtualSize % dwSecAligment ?
+			pSec->Misc.VirtualSize / dwSecAligment * dwSecAligment + dwSecAligment
+			: pSec->Misc.VirtualSize;
+		//区段中的相对虚拟地址转文件偏移  思路是 用要转换的地址与各个区
+		//段起始地址做比较如果落在一个区段中（大于起始地址小于起始地址加区段最大偏移和），
+		//就用要转换的相对虚拟地址减去区段的起始地址的相对虚拟地址，
+		//得到了这个地址相对这个区段偏移，再用得到的这个偏移加上区段在文件中的偏移的起始位置
+		//（pointerToRawData字段)就是他在文件中的文件偏移
+		if (dwRVA >= pSec->VirtualAddress &&
+			dwRVA < pSec->VirtualAddress + dwRealVirSize)
+		{
+			//FOA = RVA - 内存中区段的起始位置 + 在文件中区段的起始位置 
+			return dwRVA - pSec->VirtualAddress + pSec->PointerToRawData;
+		}
+		//下一个区段地址
+		pSec++;
+	}
+}

@@ -42,6 +42,17 @@ typedef struct _BPINFO
 
 }CCBPINFO, *PCCBPINFO;
 
+typedef struct _BTTPINFO
+{
+	DWORD dwAddress; // 断点地址
+	BOOL bOnce;		 // 一次性断点
+	BYTE OldCode;
+	DWORD Reg;//1为eax,2为ecx
+	int count;//寄存器达到的值
+
+
+}CCBTPINFO, *PCCTPINFO;
+
 
 //内存、硬件断点属性
 //内存、硬件断点节点
@@ -59,6 +70,9 @@ typedef struct {
 extern vector<BPNODE> g_HardBp;
 
 extern vector<CCBPINFO> g_VecCCBp;
+
+extern vector<CCBTPINFO> g_VecCONBp;
+extern int g_eip;
 
 class TheBeaClass
 {

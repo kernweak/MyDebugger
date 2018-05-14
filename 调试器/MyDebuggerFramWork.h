@@ -15,6 +15,8 @@ public:
 	
 public:
 	DEBUG_EVENT m_dbgEvent = { 0 };
+	HANDLE		m_hProc;
+	LPVOID		m_lpBaseOfImage;
 	//vector<CCBPINFO>m_VecCCBp; //软件断点数组
 	PROCESS_INFORMATION m_ProInfo = {};//进程信息
 };

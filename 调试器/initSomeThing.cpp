@@ -3,6 +3,8 @@
 BOOL g_isUserTf = TRUE;
 vector<BPNODE> g_HardBp = {};
 vector<CCBPINFO> g_VecCCBp = {};
+vector<CCBTPINFO> g_VecCONBp = {};
+int g_eip = 0;
 TheBeaClass::TheBeaClass()
 {
 }
